@@ -1,0 +1,142 @@
+{
+  "tx_id": "TX_MP_FAIL_001",
+  "checkpoint_id": 100,
+  "global_decision": "ABORT",
+  "process_exitcodes": {
+    "NodeA": 0,
+    "NodeB": 2,
+    "NodeC": 0
+  },
+  "nodeb_ready_log_preserved_after_pruning": true,
+  "local_checkpoints": [
+    {
+      "checkpoint_id": 100,
+      "site": "NodeA",
+      "last_checkpointed_gseq": 1,
+      "active_tx_ids": [],
+      "in_doubt_tx_ids": [],
+      "log_size_before": 1022,
+      "timestamp": "2026-05-26T19:25:54.670872+00:00",
+      "active_tx_count": 0,
+      "in_doubt_tx_count": 0
+    },
+    {
+      "checkpoint_id": 100,
+      "site": "NodeB",
+      "last_checkpointed_gseq": 1,
+      "active_tx_ids": [
+        "TX_MP_FAIL_001"
+      ],
+      "in_doubt_tx_ids": [
+        "TX_MP_FAIL_001"
+      ],
+      "log_size_before": 798,
+      "timestamp": "2026-05-26T19:25:54.678494+00:00",
+      "active_tx_count": 1,
+      "in_doubt_tx_count": 1
+    },
+    {
+      "checkpoint_id": 100,
+      "site": "NodeC",
+      "last_checkpointed_gseq": 1,
+      "active_tx_ids": [],
+      "in_doubt_tx_ids": [],
+      "log_size_before": 1022,
+      "timestamp": "2026-05-26T19:25:54.686410+00:00",
+      "active_tx_count": 0,
+      "in_doubt_tx_count": 0
+    }
+  ],
+  "global_checkpoint": {
+    "checkpoint_id": 100,
+    "global_safe_point": 1,
+    "site_safe_points": {
+      "NodeA": 1,
+      "NodeB": 1,
+      "NodeC": 1
+    },
+    "active_tx_count": 1,
+    "in_doubt_tx_count": 1,
+    "protected_tx_count": 1,
+    "snapshot_path": "C:\\Users\\nnduy\\OneDrive\\Desktop\\CK CSDLPT 40\\snapshots\\global_checkpoint_100.json",
+    "summary_path": "C:\\Users\\nnduy\\OneDrive\\Desktop\\CK CSDLPT 40\\metrics\\global_checkpoint_100_summary.json"
+  },
+  "prune_results": [
+    {
+      "site": "Coordinator",
+      "global_safe_point": 1,
+      "protected_tx_count": 1,
+      "before_bytes": 2087,
+      "after_bytes": 2087,
+      "saved_bytes": 0,
+      "saved_percent": 0.0,
+      "pruned_records": 0,
+      "remaining_records": 3
+    },
+    {
+      "site": "NodeA",
+      "global_safe_point": 1,
+      "protected_tx_count": 1,
+      "before_bytes": 1022,
+      "after_bytes": 1022,
+      "saved_bytes": 0,
+      "saved_percent": 0.0,
+      "pruned_records": 0,
+      "remaining_records": 3
+    },
+    {
+      "site": "NodeB",
+      "global_safe_point": 1,
+      "protected_tx_count": 1,
+      "before_bytes": 798,
+      "after_bytes": 798,
+      "saved_bytes": 0,
+      "saved_percent": 0.0,
+      "pruned_records": 0,
+      "remaining_records": 2
+    },
+    {
+      "site": "NodeC",
+      "global_safe_point": 1,
+      "protected_tx_count": 1,
+      "before_bytes": 1022,
+      "after_bytes": 1022,
+      "saved_bytes": 0,
+      "saved_percent": 0.0,
+      "pruned_records": 0,
+      "remaining_records": 3
+    }
+  ],
+  "recovery_result": {
+    "site": "NodeB",
+    "recovered_tx_count": 1,
+    "in_doubt_tx_ids": [
+      "TX_MP_FAIL_001"
+    ],
+    "decisions_applied": {
+      "TX_MP_FAIL_001": "ABORT"
+    },
+    "resolved_tx_ids": [
+      "TX_MP_FAIL_001"
+    ],
+    "unresolved_tx_ids": [],
+    "remaining_in_doubt_tx_ids": [],
+    "acks_after_recovery": {
+      "TX_MP_FAIL_001": {
+        "message_type": "ACK",
+        "tx_id": "TX_MP_FAIL_001",
+        "gseq": 1,
+        "sender": "NodeB",
+        "receiver": "Coordinator",
+        "payload": {
+          "state": "ABORT",
+          "message": "final decision applied during recovery"
+        },
+        "timestamp": "2026-05-26T19:25:54.748599+00:00"
+      }
+    },
+    "state_by_tx": {
+      "TX_MP_FAIL_001": "ABORT"
+    }
+  }
+}

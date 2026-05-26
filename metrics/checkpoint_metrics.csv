@@ -1,0 +1,5 @@
+checkpoint_id,site,global_safe_point,protected_tx_count,before_bytes,after_bytes,saved_bytes,saved_percent,pruned_records,remaining_records
+1,Coordinator,100000,0,245242263,0,245242263,100.0,300000,0
+1,NodeA,100000,0,64273334,390,64272944,100.0,196741,1
+1,NodeB,100000,0,64264674,390,64264284,100.0,196704,1
+1,NodeC,100000,0,64259760,390,64259370,100.0,196683,1

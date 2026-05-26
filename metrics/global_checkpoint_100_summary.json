@@ -1,0 +1,68 @@
+{
+  "checkpoint_id": 100,
+  "type": "GLOBAL_CHECKPOINT",
+  "timestamp": "2026-05-26T19:25:54.693665+00:00",
+  "sites": [
+    "NodeA",
+    "NodeB",
+    "NodeC"
+  ],
+  "site_safe_points": {
+    "NodeA": 1,
+    "NodeB": 1,
+    "NodeC": 1
+  },
+  "global_safe_point": 1,
+  "active_tx_ids": [
+    "TX_MP_FAIL_001"
+  ],
+  "in_doubt_tx_ids": [
+    "TX_MP_FAIL_001"
+  ],
+  "protected_tx_ids": [
+    "TX_MP_FAIL_001"
+  ],
+  "active_tx_count": 1,
+  "in_doubt_tx_count": 1,
+  "protected_tx_count": 1,
+  "local_checkpoint_summary": [
+    {
+      "checkpoint_id": 100,
+      "site": "NodeA",
+      "last_checkpointed_gseq": 1,
+      "active_tx_ids": [],
+      "in_doubt_tx_ids": [],
+      "log_size_before": 1022,
+      "timestamp": "2026-05-26T19:25:54.670872+00:00",
+      "active_tx_count": 0,
+      "in_doubt_tx_count": 0
+    },
+    {
+      "checkpoint_id": 100,
+      "site": "NodeB",
+      "last_checkpointed_gseq": 1,
+      "active_tx_ids": [
+        "TX_MP_FAIL_001"
+      ],
+      "in_doubt_tx_ids": [
+        "TX_MP_FAIL_001"
+      ],
+      "log_size_before": 798,
+      "timestamp": "2026-05-26T19:25:54.678494+00:00",
+      "active_tx_count": 1,
+      "in_doubt_tx_count": 1
+    },
+    {
+      "checkpoint_id": 100,
+      "site": "NodeC",
+      "last_checkpointed_gseq": 1,
+      "active_tx_ids": [],
+      "in_doubt_tx_ids": [],
+      "log_size_before": 1022,
+      "timestamp": "2026-05-26T19:25:54.686410+00:00",
+      "active_tx_count": 0,
+      "in_doubt_tx_count": 0
+    }
+  ],
+  "pruning_rule": "A log record can be pruned only if gseq <= global_safe_point, transaction is COMMIT or ABORT, and transaction is not protected."
+}

@@ -1,0 +1,12 @@
+{
+  "checkpoint_id": 100,
+  "site": "NodeC",
+  "last_checkpointed_gseq": 1,
+  "active_tx_ids": [],
+  "in_doubt_tx_ids": [],
+  "state_by_tx_count": 1,
+  "state_by_tx_sample": {
+    "TX_MP_FAIL_001": "ABORT"
+  },
+  "timestamp": "2026-05-26T19:25:54.684710+00:00"
+}

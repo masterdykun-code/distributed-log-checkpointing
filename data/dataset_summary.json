@@ -1,0 +1,22 @@
+{
+  "total_records": 100000,
+  "symbol_counts": {
+    "MSFT": 9990,
+    "META": 9940,
+    "INTC": 9884,
+    "NFLX": 10108,
+    "GOOGL": 10103,
+    "NVDA": 9841,
+    "AMZN": 9984,
+    "AAPL": 9808,
+    "TSLA": 10237,
+    "AMD": 10105
+  },
+  "side_counts": {
+    "BUY": 49908,
+    "SELL": 50092
+  },
+  "total_notional": 9014708020.0,
+  "first_tx_id": "TX000001",
+  "last_tx_id": "TX100000"
+}

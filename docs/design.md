@@ -298,7 +298,44 @@ Hệ thống chọn giá trị nhỏ nhất để đảm bảo không site nào 
 
 ---
 
-## 17. Quy Tắc Prune Log
+## 17. Demo Safe Point Khi Một Node Bị Chậm
+
+Để chứng minh vì sao global safe point phải lấy giá trị nhỏ nhất, project có thêm demo mô phỏng trường hợp các node checkpoint đến các mốc khác nhau.
+
+Ví dụ:
+
+```text
+NodeA.last_checkpointed_gseq = 1200
+NodeB.last_checkpointed_gseq = 1170
+NodeC.last_checkpointed_gseq = 1195
+```
+
+Khi đó:
+
+```text
+global_safe_point = min(1200, 1170, 1195) = 1170
+```
+
+NodeB là site chậm nhất, nên hệ thống chỉ được prune log đến `gseq = 1170`. Các log sau mốc này có thể vẫn cần cho NodeB trong quá trình recovery.
+
+Script demo:
+
+```bash
+python scripts/run_lagging_site_demo.py --checkpoint-id 200
+```
+
+Output chính:
+
+```text
+metrics/local_checkpoint_200_summary.json
+metrics/global_checkpoint_200_summary.json
+metrics/lagging_site_checkpoint_200_summary.json
+snapshots/global_checkpoint_200.json
+```
+
+---
+
+## 18. Quy Tắc Prune Log
 
 Một log record chỉ được prune nếu thỏa tất cả điều kiện:
 

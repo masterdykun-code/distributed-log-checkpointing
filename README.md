@@ -65,6 +65,7 @@ logs/
 metrics/
   workload_summary.json          Kết quả chạy workload
   checkpoint_metrics.csv         Metric dung lượng tiết kiệm sau pruning
+  lagging_site_checkpoint_*.json Kết quả demo safe point khi một node bị chậm
   failure_demo_summary.json      Kết quả demo failure recovery
   multiprocessing_failure_demo_summary.json
                                   Kết quả demo crash bằng multiprocessing
@@ -77,6 +78,7 @@ scripts/
   run_workload.py                Chạy workload 2PC
   run_checkpoint_demo.py         Tạo local checkpoint
   run_global_checkpoint.py       Tạo global checkpoint
+  run_lagging_site_demo.py       Demo safe point khi một node checkpoint chậm hơn
   run_log_pruning.py             Prune log theo safe point
   run_failure_demo.py            Demo NodeB crash và recovery
   run_multiprocessing_failure_demo.py
@@ -231,6 +233,52 @@ global_safe_point = min(
 ```
 
 Ý nghĩa: hệ thống chỉ được prune log tại các vị trí không vượt quá mốc mà tất cả site đã checkpoint an toàn.
+
+## Demo Safe Point Khi Một Node Bị Chậm
+
+Demo này tạo local checkpoint metadata mô phỏng trường hợp các node checkpoint đến các mốc khác nhau:
+
+```text
+NodeA.last_checkpointed_gseq = 1200
+NodeB.last_checkpointed_gseq = 1170
+NodeC.last_checkpointed_gseq = 1195
+```
+
+Vì NodeB là site chậm nhất, safe point toàn cục phải là:
+
+```text
+global_safe_point = min(1200, 1170, 1195) = 1170
+```
+
+Chạy:
+
+```bash
+python scripts/run_lagging_site_demo.py --checkpoint-id 200
+```
+
+Có thể truyền giá trị khác:
+
+```bash
+python scripts/run_lagging_site_demo.py --checkpoint-id 201 --node-a-gseq 1000 --node-b-gseq 850 --node-c-gseq 1000
+```
+
+Kết quả:
+
+```text
+metrics/local_checkpoint_200_summary.json
+metrics/global_checkpoint_200_summary.json
+metrics/lagging_site_checkpoint_200_summary.json
+snapshots/global_checkpoint_200.json
+```
+
+Trong kết quả cần kiểm tra:
+
+```text
+site_safe_points.NodeA = 1200
+site_safe_points.NodeB = 1170
+site_safe_points.NodeC = 1195
+global_safe_point = 1170
+```
 
 ## Prune Log An Toàn
 

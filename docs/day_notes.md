@@ -558,3 +558,52 @@ process_exitcodes.NodeB = 2
 nodeb_ready_log_preserved_after_pruning = true
 recovery_result.decisions_applied.TX_MP_FAIL_001 = ABORT
 ```
+
+---
+
+## Ngày 15
+
+### Việc đã làm
+
+Thêm demo safe point khi một node checkpoint chậm hơn các node còn lại.
+
+### File liên quan
+
+- `scripts/run_lagging_site_demo.py`
+- `README.md`
+- `docs/design.md`
+
+### Ý tưởng
+
+Demo này mô phỏng trường hợp các site checkpoint đến các mốc khác nhau:
+
+```text
+NodeA = 1200
+NodeB = 1170
+NodeC = 1195
+```
+
+Vì NodeB là site chậm nhất, global safe point phải là:
+
+```text
+global_safe_point = 1170
+```
+
+### Lệnh chạy
+
+```bash
+python scripts/run_lagging_site_demo.py --checkpoint-id 200
+```
+
+### Output
+
+```text
+metrics/local_checkpoint_200_summary.json
+metrics/global_checkpoint_200_summary.json
+metrics/lagging_site_checkpoint_200_summary.json
+snapshots/global_checkpoint_200.json
+```
+
+### Ý nghĩa
+
+Demo này làm rõ phần phân tích của đề tài: hệ thống chỉ được xóa log đến mốc mà tất cả site đã checkpoint an toàn. Nếu một site bị chậm, site đó quyết định giới hạn prune log toàn cục.

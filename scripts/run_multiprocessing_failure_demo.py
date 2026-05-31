@@ -5,6 +5,7 @@ import json
 import os
 import queue
 import sys
+import time
 from multiprocessing import Process, Queue, freeze_support
 from pathlib import Path
 from typing import Any, Dict, List
@@ -23,6 +24,7 @@ from src.recovery_manager import RecoveryManager
 DATA_DIR = PROJECT_ROOT / "data"
 METRICS_DIR = PROJECT_ROOT / "metrics"
 SNAPSHOT_DIR = PROJECT_ROOT / "snapshots"
+DATASET_PATH = DATA_DIR / "transactions_100k.jsonl"
 GLOBAL_TX_TABLE_PATH = DATA_DIR / "global_tx_table.json"
 
 
@@ -34,9 +36,8 @@ def participant_process(
     """
     Participant process used by the multiprocessing failure demo.
 
-    For the hard-crash path, the process writes READY and exits immediately.
-    This simulates a participant process dying before it receives the global
-    decision from the Coordinator.
+    For the hard-crash path, the process writes READY, sends VOTE_COMMIT,
+    and exits before it receives the global decision from the Coordinator.
     """
 
     node = ParticipantNode(site_name, min_delay=0.01, max_delay=0.03)
@@ -54,12 +55,14 @@ def participant_process(
             )
 
             if hard_crash_after_ready:
-                node.handle_prepare(
+                response = node.handle_prepare(
                     transaction=message["payload"]["transaction"],
                     gseq=int(message["gseq"]),
                     can_commit=bool(message["payload"].get("can_commit", True)),
                     crash_after_ready=False,
                 )
+                output_queue.put(response.to_dict())
+                time.sleep(0.05)
                 os._exit(2)
 
             response = node.handle_prepare(
@@ -119,11 +122,85 @@ def collect_messages(
     return messages
 
 
-def write_global_tx_table(record: Dict[str, Any]) -> None:
+def load_transaction_by_index(tx_index: int) -> Dict[str, Any]:
+    """
+    Load a real transaction from the generated JSONL dataset.
+
+    tx_index is one-based, so --tx-index 1001 loads TX001001 when the
+    default dataset generator is used.
+    """
+    if tx_index <= 0:
+        raise ValueError("--tx-index must be greater than 0.")
+
+    if not DATASET_PATH.exists():
+        raise FileNotFoundError(
+            f"Dataset not found: {DATASET_PATH}. "
+            "Run: python scripts/generate_dataset.py --records 100000"
+        )
+
+    with DATASET_PATH.open("r", encoding="utf-8") as file:
+        for line_number, line in enumerate(file, start=1):
+            if line_number == tx_index:
+                return json.loads(line)
+
+    raise ValueError(f"Dataset has fewer than {tx_index} transactions.")
+
+
+def load_global_tx_table() -> Dict[str, Dict[str, Any]]:
+    if not GLOBAL_TX_TABLE_PATH.exists():
+        return {}
+
+    with GLOBAL_TX_TABLE_PATH.open("r", encoding="utf-8") as file:
+        try:
+            data = json.load(file)
+        except json.JSONDecodeError:
+            return {}
+
+    if not isinstance(data, dict):
+        return {}
+
+    return data
+
+
+def write_global_tx_table(table: Dict[str, Dict[str, Any]]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     with GLOBAL_TX_TABLE_PATH.open("w", encoding="utf-8") as file:
-        json.dump({record["tx_id"]: record}, file, indent=2, ensure_ascii=False)
+        json.dump(table, file, indent=2, ensure_ascii=False)
+
+
+def append_global_tx_record(record: Dict[str, Any]) -> None:
+    table = load_global_tx_table()
+    table[record["tx_id"]] = record
+    write_global_tx_table(table)
+
+
+def get_next_gseq() -> int:
+    max_gseq = 0
+
+    for record in load_global_tx_table().values():
+        gseq = record.get("gseq")
+        if gseq is not None:
+            max_gseq = max(max_gseq, int(gseq))
+
+    return max_gseq + 1
+
+
+def assert_transaction_not_already_logged(tx_id: str) -> None:
+    existing_sites = []
+
+    if tx_id in load_global_tx_table():
+        existing_sites.append("global_tx_table")
+
+    for site in ["Coordinator", "NodeA", "NodeB", "NodeC"]:
+        if tx_id in LogManager(site).get_latest_state_by_tx():
+            existing_sites.append(site)
+
+    if existing_sites:
+        raise ValueError(
+            f"Transaction {tx_id} already exists in {existing_sites}. "
+            "Choose another --tx-index or rerun this script with --reset."
+        )
 
 
 def create_local_checkpoints(checkpoint_id: int) -> List[Dict[str, Any]]:
@@ -202,21 +279,22 @@ def stop_live_processes(
             process.join(timeout=2.0)
 
 
-def run_demo(checkpoint_id: int) -> Dict[str, Any]:
-    tx = {
-        "tx_id": "TX_MP_FAIL_001",
-        "account_id": "ACC7777",
-        "symbol": "NVDA",
-        "side": "BUY",
-        "quantity": 50,
-        "price": 920.40,
-        "timestamp": "multiprocessing-failure-demo",
-    }
+def run_demo(
+    *,
+    checkpoint_id: int,
+    tx_index: int,
+    abort_site: str | None,
+    reset: bool,
+) -> Dict[str, Any]:
+    tx = load_transaction_by_index(tx_index)
 
-    Coordinator().clear_all_logs()
+    if reset:
+        Coordinator().clear_all_logs()
+
+    assert_transaction_not_already_logged(str(tx["tx_id"]))
 
     coordinator_log = LogManager("Coordinator")
-    gseq = 1
+    gseq = get_next_gseq()
     sites = ["NodeA", "NodeB", "NodeC"]
 
     input_queues = {site: Queue() for site in sites}
@@ -240,6 +318,7 @@ def run_demo(checkpoint_id: int) -> Dict[str, Any]:
 
     try:
         print("Step 1: Coordinator writes BEGIN_COMMIT and sends PREPARE.")
+        print(f"Dataset transaction: index={tx_index}, tx_id={tx['tx_id']}, gseq={gseq}")
         coordinator_log.append_log(
             gseq=gseq,
             tx_id=tx["tx_id"],
@@ -262,7 +341,7 @@ def run_demo(checkpoint_id: int) -> Dict[str, Any]:
                     receiver=site,
                     payload={
                         "transaction": tx,
-                        "can_commit": True,
+                        "can_commit": site != abort_site,
                         "hard_crash_after_ready": site == "NodeB",
                     },
                 )
@@ -285,27 +364,43 @@ def run_demo(checkpoint_id: int) -> Dict[str, Any]:
         print("Step 2: NodeB process has crashed after READY.")
         print(f"NodeB exitcode: {processes['NodeB'].exitcode}")
 
-        global_decision = TxState.ABORT
+        all_vote_commit = (
+            len(votes) == len(sites)
+            and not prepare_errors
+            and all(
+                vote["message_type"] == MessageType.VOTE_COMMIT.value
+                for vote in votes.values()
+            )
+        )
+
+        if all_vote_commit:
+            global_decision = TxState.COMMIT
+            decision_event = LogEvent.GLOBAL_COMMIT
+            decision_message_type = MessageType.GLOBAL_COMMIT
+        else:
+            global_decision = TxState.ABORT
+            decision_event = LogEvent.GLOBAL_ABORT
+            decision_message_type = MessageType.GLOBAL_ABORT
 
         coordinator_log.append_log(
             gseq=gseq,
             tx_id=tx["tx_id"],
             role=NodeRole.COORDINATOR,
             state=global_decision,
-            event=LogEvent.GLOBAL_ABORT,
+            event=decision_event,
             details={
-                "message": "Coordinator decision: ABORT",
+                "message": f"Coordinator decision: {global_decision.value}",
                 "votes": votes,
                 "prepare_errors": prepare_errors,
             },
         )
 
-        print("Step 3: Coordinator sends GLOBAL_ABORT to live participants.")
+        print(f"Step 3: Coordinator sends GLOBAL_{global_decision.value} to live participants.")
 
         for site in ["NodeA", "NodeC"]:
             input_queues[site].put(
                 make_message(
-                    MessageType.GLOBAL_ABORT,
+                    decision_message_type,
                     tx_id=tx["tx_id"],
                     gseq=gseq,
                     receiver=site,
@@ -346,7 +441,7 @@ def run_demo(checkpoint_id: int) -> Dict[str, Any]:
             "decision_errors": decision_errors,
             "timestamp": utc_now_iso(),
         }
-        write_global_tx_table(tx_record)
+        append_global_tx_record(tx_record)
 
         print("Step 4: Create local and global checkpoints.")
         local_checkpoints = create_local_checkpoints(checkpoint_id)
@@ -372,7 +467,11 @@ def run_demo(checkpoint_id: int) -> Dict[str, Any]:
 
         summary = {
             "tx_id": tx["tx_id"],
+            "tx_index": tx_index,
+            "transaction_source": str(DATASET_PATH),
+            "gseq": gseq,
             "checkpoint_id": checkpoint_id,
+            "abort_site": abort_site,
             "global_decision": global_decision.value,
             "process_exitcodes": {
                 site: process.exitcode for site, process in processes.items()
@@ -409,13 +508,43 @@ def main() -> None:
         default=100,
         help="Checkpoint id for the multiprocessing failure demo.",
     )
+    parser.add_argument(
+        "--tx-index",
+        type=int,
+        default=1001,
+        help=(
+            "One-based transaction index loaded from data/transactions_100k.jsonl. "
+            "Use 1001 after a 1000-transaction workload demo."
+        ),
+    )
+    parser.add_argument(
+        "--abort-site",
+        choices=["NodeA", "NodeC", "none"],
+        default="NodeC",
+        help=(
+            "Live participant that votes abort. NodeB is reserved for "
+            "crash-after-READY."
+        ),
+    )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Clear existing logs/global transaction table before this demo.",
+    )
 
     args = parser.parse_args()
 
     if args.checkpoint_id <= 0:
         raise ValueError("--checkpoint-id must be greater than 0.")
 
-    run_demo(args.checkpoint_id)
+    abort_site = None if args.abort_site == "none" else args.abort_site
+
+    run_demo(
+        checkpoint_id=args.checkpoint_id,
+        tx_index=args.tx_index,
+        abort_site=abort_site,
+        reset=args.reset,
+    )
 
 
 if __name__ == "__main__":

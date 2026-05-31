@@ -70,6 +70,27 @@ def choose_abort_site(abort_rate: float) -> Dict[str, bool]:
     return {site: False}
 
 
+def choose_crash_site(crash_rate: float, excluded_site: str | None) -> str | None:
+    """
+    Randomly choose one participant to crash after READY.
+
+    A participant that votes abort is excluded because it never enters READY.
+    """
+    if random.random() >= crash_rate:
+        return None
+
+    candidates = [
+        site
+        for site in ["NodeA", "NodeB", "NodeC"]
+        if site != excluded_site
+    ]
+
+    if not candidates:
+        return None
+
+    return random.choice(candidates)
+
+
 def make_coordinator(fast: bool) -> Coordinator:
     """
     Build Coordinator with three participants.
@@ -101,6 +122,7 @@ def run_workload(
     *,
     limit: int,
     abort_rate: float,
+    crash_rate: float,
     reset: bool,
     fast: bool,
     seed: int,
@@ -125,21 +147,31 @@ def run_workload(
 
     commit_count = 0
     abort_count = 0
+    crash_after_ready_count = 0
     error_count = 0
 
     for index, tx in enumerate(transactions, start=1):
         can_commit_by_site = choose_abort_site(abort_rate)
+        abort_site = next(iter(can_commit_by_site), None)
+        crash_site = choose_crash_site(
+            crash_rate=crash_rate,
+            excluded_site=abort_site,
+        )
 
         try:
             result = coordinator.execute_transaction(
                 tx,
                 can_commit_by_site=can_commit_by_site,
+                crash_site_after_ready=crash_site,
             )
 
             if result["global_decision"] == "COMMIT":
                 commit_count += 1
             else:
                 abort_count += 1
+
+            if crash_site and crash_site in result.get("prepare_errors", {}):
+                crash_after_ready_count += 1
 
         except Exception as exc:
             error_count += 1
@@ -152,6 +184,7 @@ def run_workload(
             print(
                 f"Processed {index:,}/{len(transactions):,} transactions | "
                 f"COMMIT={commit_count:,} ABORT={abort_count:,} "
+                f"CRASH_AFTER_READY={crash_after_ready_count:,} "
                 f"ERROR={error_count:,} | TPS={tps:.2f}"
             )
 
@@ -166,8 +199,10 @@ def run_workload(
         "processed": len(transactions),
         "commit_count": commit_count,
         "abort_count": abort_count,
+        "crash_after_ready_count": crash_after_ready_count,
         "error_count": error_count,
         "abort_rate": abort_rate,
+        "crash_rate": crash_rate,
         "elapsed_seconds": round(elapsed, 2),
         "transactions_per_second": round(len(transactions) / elapsed, 2)
         if elapsed > 0
@@ -211,6 +246,13 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--crash-rate",
+        type=float,
+        default=0.0,
+        help="Probability that one participant crashes after writing READY.",
+    )
+
+    parser.add_argument(
         "--reset",
         action="store_true",
         help="Clear logs and global transaction table before running.",
@@ -244,9 +286,13 @@ def main() -> None:
     if not (0.0 <= args.abort_rate <= 1.0):
         raise ValueError("--abort-rate must be between 0.0 and 1.0.")
 
+    if not (0.0 <= args.crash_rate <= 1.0):
+        raise ValueError("--crash-rate must be between 0.0 and 1.0.")
+
     run_workload(
         limit=args.limit,
         abort_rate=args.abort_rate,
+        crash_rate=args.crash_rate,
         reset=args.reset,
         fast=args.fast,
         seed=args.seed,

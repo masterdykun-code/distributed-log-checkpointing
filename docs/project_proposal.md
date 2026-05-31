@@ -46,7 +46,7 @@ Các mục tiêu chính:
 8. Xóa log an toàn dựa trên safe point và protected transaction.
 9. Đo dung lượng đĩa tiết kiệm sau mỗi checkpointing cycle.
 10. Mô phỏng lỗi node crash sau trạng thái `READY`.
-11. Phục hồi node bị crash từ durable log và quyết định cuối cùng của Coordinator.
+11. Phục hồi các transaction in-doubt từ durable log và quyết định cuối cùng của Coordinator.
 
 ---
 
@@ -208,6 +208,7 @@ Quy trình global checkpointing:
 5. Hệ thống tính `global_safe_point`.
 6. Hệ thống xác định `protected_tx_ids`.
 7. Log pruning chỉ xóa các log không còn cần cho recovery.
+8. Recovery tổng thể đọc durable log và `global_tx_table.json` để giải quyết các transaction in-doubt còn lại.
 
 ---
 
@@ -256,6 +257,18 @@ Hành vi mong đợi:
 9. NodeB ghi `COMMIT` hoặc `ABORT` theo quyết định của Coordinator.
 10. Recovery hoàn tất mà không làm hỏng dữ liệu.
 
+Ngoài demo crash riêng, project có script recovery tổng thể:
+
+```bash
+python scripts/run_recovery_demo.py --fail-on-unresolved
+```
+
+Script này chạy recovery cho NodeA, NodeB và NodeC, sau đó ghi kết quả vào:
+
+```text
+metrics/recovery_summary.json
+```
+
 ---
 
 ## 14. Metric Đánh Giá
@@ -272,6 +285,7 @@ Kết quả được lưu tại:
 ```text
 metrics/checkpoint_metrics.csv
 metrics/prune_checkpoint_<id>_summary.json
+metrics/recovery_summary.json
 ```
 
 Ví dụ:
@@ -295,6 +309,7 @@ Project cần chứng minh được:
 - tạo local checkpoint và global checkpoint;
 - tính được safe point;
 - prune log an toàn;
+- recovery tổng thể các transaction in-doubt sau pruning;
 - báo cáo dung lượng đĩa tiết kiệm;
 - recovery đúng sau demo lỗi.
 

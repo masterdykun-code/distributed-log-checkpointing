@@ -159,6 +159,28 @@ saved_percent
 5. Nếu global decision là `ABORT`, ghi log `ABORT`.
 6. Nếu chưa có decision, giữ transaction trong `READY` và tiếp tục bảo vệ log.
 
+`scripts/run_recovery_demo.py` dùng `RecoveryManager` để recovery tổng thể cho NodeA, NodeB và NodeC sau bước pruning.
+
+Lệnh chạy:
+
+```bash
+python scripts/run_recovery_demo.py --fail-on-unresolved
+```
+
+Script ghi kết quả vào:
+
+```text
+metrics/recovery_summary.json
+```
+
+Kết quả mong đợi:
+
+```text
+total_in_doubt_before > 0
+total_resolved = total_in_doubt_before
+total_remaining_in_doubt = 0
+```
+
 ## 10. Crash demo bằng multiprocessing
 
 `scripts/run_multiprocessing_failure_demo.py` dùng `multiprocessing` để tạo process riêng cho NodeA, NodeB và NodeC.
@@ -193,6 +215,7 @@ python scripts/run_workload.py --limit 1000 --reset --fast --abort-rate 0.1 --cr
 python scripts/run_checkpoint_demo.py --checkpoint-id 1
 python scripts/run_global_checkpoint.py --checkpoint-id 1
 python scripts/run_log_pruning.py --checkpoint-id 1 --include-coordinator
+python scripts/run_recovery_demo.py --fail-on-unresolved
 python scripts/run_multiprocessing_failure_demo.py --checkpoint-id 100 --tx-index 1001
 ```
 

@@ -51,6 +51,7 @@ scripts/
   run_checkpoint_demo.py              Tạo local checkpoint cho NodeA, NodeB, NodeC
   run_global_checkpoint.py            Tạo global checkpoint và tính global_safe_point
   run_log_pruning.py                  Prune log an toàn và ghi metric dung lượng tiết kiệm
+  run_recovery_demo.py                Recovery tổng thể cho NodeA, NodeB, NodeC sau pruning
   run_failure_demo.py                 Demo recovery ở mức object khi NodeB crash sau READY
   run_multiprocessing_failure_demo.py Demo NodeB process crash bằng multiprocessing
 
@@ -209,7 +210,36 @@ saved_bytes = before_bytes - after_bytes
 saved_percent = saved_bytes / before_bytes * 100
 ```
 
-## 6. Demo crash bằng multiprocessing
+## 6. Recovery tổng thể sau pruning
+
+Sau khi pruning, các transaction đang `READY` / in-doubt vẫn được giữ lại trong log vì chúng nằm trong `protected_tx_ids`. Lệnh sau phục hồi toàn bộ participant bằng cách đọc durable log và `data/global_tx_table.json`:
+
+```bash
+python scripts/run_recovery_demo.py --fail-on-unresolved
+```
+
+Output:
+
+```text
+metrics/recovery_summary.json
+```
+
+Ý nghĩa các trường chính:
+
+- `total_in_doubt_before`: tổng số transaction in-doubt trước recovery.
+- `total_resolved`: số transaction đã được đưa về `COMMIT` hoặc `ABORT`.
+- `total_unresolved`: số transaction chưa có global decision để recovery.
+- `total_remaining_in_doubt`: số transaction còn in-doubt sau recovery.
+
+Khi demo thành công, giá trị quan trọng là:
+
+```text
+total_remaining_in_doubt = 0
+```
+
+Điều này chứng minh rằng pruning không xóa các log cần cho recovery.
+
+## 7. Demo crash bằng multiprocessing
 
 Script này dùng transaction thật từ `data/transactions_100k.jsonl`. Mặc định `--tx-index 1001`, phù hợp khi trước đó workload demo đã chạy 1000 transaction.
 
@@ -250,7 +280,7 @@ Nếu muốn chạy crash demo độc lập, thêm `--reset`:
 python scripts/run_multiprocessing_failure_demo.py --checkpoint-id 100 --tx-index 1 --reset
 ```
 
-## Kịch bản quay video đề xuất
+## Kịch bản quay demo đề xuất
 
 ```bash
 python scripts/generate_dataset.py --records 100000
@@ -258,6 +288,7 @@ python scripts/run_workload.py --limit 1000 --reset --fast --abort-rate 0.1 --cr
 python scripts/run_checkpoint_demo.py --checkpoint-id 1
 python scripts/run_global_checkpoint.py --checkpoint-id 1
 python scripts/run_log_pruning.py --checkpoint-id 1 --include-coordinator
+python scripts/run_recovery_demo.py --fail-on-unresolved
 python scripts/run_multiprocessing_failure_demo.py --checkpoint-id 100 --tx-index 1001
 ```
 

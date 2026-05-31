@@ -187,8 +187,6 @@ python scripts/run_multiprocessing_failure_demo.py --checkpoint-id 100 --tx-inde
 
 Demo chính không dùng metadata synthetic. Tất cả checkpoint chính được tạo từ log thật sinh ra bởi workload và crash demo.
 
-Thứ tự để quay video:
-
 ```bash
 python scripts/generate_dataset.py --records 100000
 python scripts/run_workload.py --limit 1000 --reset --fast --abort-rate 0.1 --crash-rate 0.01

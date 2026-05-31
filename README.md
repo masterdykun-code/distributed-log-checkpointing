@@ -46,21 +46,21 @@ docs/
   analysis_report.md             Báo cáo phân tích lý thuyết
 
 scripts/
-  generate_dataset.py
-  run_workload.py
-  run_checkpoint_demo.py
-  run_global_checkpoint.py
-  run_log_pruning.py
-  run_failure_demo.py
-  run_multiprocessing_failure_demo.py
+  generate_dataset.py                 Sinh dataset 100,000 transaction dạng JSONL
+  run_workload.py                     Chạy workload 2PC từ dataset, hỗ trợ abort-rate và crash-rate
+  run_checkpoint_demo.py              Tạo local checkpoint cho NodeA, NodeB, NodeC
+  run_global_checkpoint.py            Tạo global checkpoint và tính global_safe_point
+  run_log_pruning.py                  Prune log an toàn và ghi metric dung lượng tiết kiệm
+  run_failure_demo.py                 Demo recovery ở mức object khi NodeB crash sau READY
+  run_multiprocessing_failure_demo.py Demo NodeB process crash bằng multiprocessing
 
 src/
-  coordinator.py
-  node.py
-  log_manager.py
-  checkpoint_manager.py
-  recovery_manager.py
-  models.py
+  coordinator.py                      Cài đặt Coordinator của giao thức 2PC
+  node.py                             Cài đặt ParticipantNode, xử lý PREPARE/COMMIT/ABORT
+  log_manager.py                      Ghi, đọc, checkpoint summary và prune durable JSONL log
+  checkpoint_manager.py               Gom local checkpoint, tính safe point và protected transactions
+  recovery_manager.py                 Phục hồi participant từ READY/in-doubt sang COMMIT hoặc ABORT
+  models.py                           Định nghĩa state, message, log record và checkpoint metadata
 ```
 
 `logs/*.log`, `metrics/*` và `snapshots/*` là artifact sinh từ demo nên được ignore trong Git. Repo chỉ giữ các thư mục này bằng `.gitkeep`.

@@ -130,6 +130,8 @@ Sơ đồ:
 
 - Workload chính dùng Python method calls để mô phỏng giao tiếp Coordinator -> Participants.
 - Demo crash dùng `multiprocessing.Process` và `multiprocessing.Queue` để mô phỏng các site chạy trong process riêng.
+- Demo site chậm dùng ba process có processing delay khác nhau và checkpoint
+  giữa lúc workload đang chạy.
 - Communication delay được mô phỏng bằng `time.sleep()` trong participant node.
 
 **Lưu trữ vật lý:**
@@ -165,10 +167,12 @@ Không cần DBMS thật hoặc framework web vì trọng tâm là mô phỏng t
 4. Ghi durable JSONL log cho từng site.
 5. Tạo local checkpoint từ durable log.
 6. Tạo global checkpoint và tính `global_safe_point`.
-7. Cài đặt log pruning dựa trên safe point và protected transactions.
-8. Cài đặt crash scenario sau `READY`.
-9. Cài đặt recovery tổng thể cho các transaction in-doubt.
-10. Ghi metrics về disk space saved và recovery result.
+7. Lưu local checkpoint high-watermark không giảm sau pruning.
+8. Cài đặt demo site chậm để kiểm chứng phép lấy minimum.
+9. Cài đặt log pruning dựa trên safe point và protected transactions.
+10. Cài đặt crash scenario sau `READY`.
+11. Cài đặt recovery tổng thể cho các transaction in-doubt.
+12. Ghi metrics về disk space saved và recovery result.
 
 ## 6. Metric Thành Công Và Phân Tích
 
@@ -207,6 +211,15 @@ Các trường quan trọng:
 - `total_unresolved`
 - `total_remaining_in_doubt`
 
+Metric của demo site chậm:
+
+```text
+metrics/delayed_site_demo_summary.json
+```
+
+File này lưu tiến độ đo được tại NodeA, NodeB, NodeC, `global_safe_point` và
+site đang giới hạn safe point.
+
 ### Kịch bản lỗi
 
 Failure chính:
@@ -242,6 +255,7 @@ Video demo 3-5 phút sẽ chứng minh:
 - chạy workload 2PC;
 - tạo local checkpoint và global checkpoint;
 - tính `global_safe_point`;
+- chứng minh NodeB chậm làm giới hạn `global_safe_point`;
 - prune log và đo disk space saved;
 - recovery các transaction in-doubt;
 - mô phỏng NodeB process crash bằng `multiprocessing`;

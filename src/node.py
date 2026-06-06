@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from src.log_manager import LogManager
+from src.log_manager import LOG_DIR, LogManager
 from src.models import (
     CheckpointMetadata,
     LogEvent,
@@ -42,10 +43,13 @@ class ParticipantNode:
         site_name: str,
         min_delay: float = 0.01,
         max_delay: float = 0.05,
+        log_dir: Optional[Path] = None,
+        snapshot_dir: Optional[Path] = None,
     ) -> None:
         self.site_name = site_name
         self.role = NodeRole.PARTICIPANT
-        self.log_manager = LogManager(site_name)
+        self.log_manager = LogManager(site_name, log_dir=log_dir or LOG_DIR)
+        self.snapshot_dir = snapshot_dir or SNAPSHOT_DIR
 
         self.min_delay = min_delay
         self.max_delay = max_delay
@@ -53,7 +57,73 @@ class ParticipantNode:
         # In-memory state. This can be rebuilt from durable logs after crash.
         self.state_by_tx: Dict[str, TxState] = {}
 
-        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        self.snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def checkpoint_state_path(self) -> Path:
+        """
+        Durable high-watermark for this site's local checkpoints.
+
+        Transaction records below the checkpoint can be pruned, so the
+        high-watermark must be stored separately from the prunable log.
+        """
+        return self.snapshot_dir / f"{self.site_name}_checkpoint_state.json"
+
+    def _load_checkpoint_high_watermark(self) -> int:
+        if self.checkpoint_state_path.exists():
+            with self.checkpoint_state_path.open("r", encoding="utf-8") as file:
+                try:
+                    state = json.load(file)
+                except json.JSONDecodeError:
+                    state = {}
+
+            if "last_checkpointed_gseq" in state:
+                return int(state["last_checkpointed_gseq"])
+
+        # Backward-compatible migration for snapshots created before the
+        # dedicated checkpoint-state file was introduced.
+        high_watermark = 0
+
+        for snapshot_path in self.snapshot_dir.glob(
+            f"{self.site_name}_checkpoint_*.json"
+        ):
+            if snapshot_path == self.checkpoint_state_path:
+                continue
+
+            with snapshot_path.open("r", encoding="utf-8") as file:
+                try:
+                    snapshot = json.load(file)
+                except json.JSONDecodeError:
+                    continue
+
+            high_watermark = max(
+                high_watermark,
+                int(snapshot.get("last_checkpointed_gseq", 0)),
+            )
+
+        return high_watermark
+
+    def _save_checkpoint_high_watermark(
+        self,
+        *,
+        checkpoint_id: int,
+        last_checkpointed_gseq: int,
+    ) -> None:
+        state = {
+            "site": self.site_name,
+            "checkpoint_id": checkpoint_id,
+            "last_checkpointed_gseq": last_checkpointed_gseq,
+            "timestamp": utc_now_iso(),
+        }
+
+        temp_path = self.checkpoint_state_path.with_suffix(".tmp")
+
+        with temp_path.open("w", encoding="utf-8") as file:
+            json.dump(state, file, indent=2, ensure_ascii=False)
+            file.flush()
+            os.fsync(file.fileno())
+
+        temp_path.replace(self.checkpoint_state_path)
 
     def _simulate_communication_delay(self) -> None:
         """
@@ -64,10 +134,16 @@ class ParticipantNode:
 
     def clear_logs(self) -> None:
         """
-        Clear node log for testing/demo reset.
+        Clear node log and checkpoint high-watermark for testing/demo reset.
         """
         self.log_manager.clear()
         self.state_by_tx.clear()
+
+        for snapshot_path in self.snapshot_dir.glob(
+            f"{self.site_name}_checkpoint_*"
+        ):
+            if snapshot_path.is_file():
+                snapshot_path.unlink()
 
     def get_state(self, tx_id: str) -> TxState:
         """
@@ -303,7 +379,12 @@ class ParticipantNode:
         summary = self.log_manager.build_checkpoint_summary()
 
         latest_state_by_tx = summary["latest_state_by_tx"]
-        last_checkpointed_gseq = summary["last_checkpointed_gseq"]
+        observed_max_gseq = summary["last_checkpointed_gseq"]
+        previous_high_watermark = self._load_checkpoint_high_watermark()
+        last_checkpointed_gseq = max(
+            observed_max_gseq,
+            previous_high_watermark,
+        )
         active_tx_ids = summary["active_tx_ids"]
         in_doubt_tx_ids = summary["in_doubt_tx_ids"]
 
@@ -314,6 +395,8 @@ class ParticipantNode:
             "checkpoint_id": checkpoint_id,
             "site": self.site_name,
             "last_checkpointed_gseq": last_checkpointed_gseq,
+            "observed_max_gseq": observed_max_gseq,
+            "previous_high_watermark": previous_high_watermark,
             "active_tx_ids": active_tx_ids,
             "in_doubt_tx_ids": in_doubt_tx_ids,
             "state_by_tx_count": len(self.state_by_tx),
@@ -324,10 +407,18 @@ class ParticipantNode:
             "timestamp": utc_now_iso(),
         }
 
-        snapshot_path = SNAPSHOT_DIR / f"{self.site_name}_checkpoint_{checkpoint_id}.json"
+        snapshot_path = (
+            self.snapshot_dir
+            / f"{self.site_name}_checkpoint_{checkpoint_id}.json"
+        )
 
         with snapshot_path.open("w", encoding="utf-8") as file:
             json.dump(snapshot, file, indent=2, ensure_ascii=False)
+
+        self._save_checkpoint_high_watermark(
+            checkpoint_id=checkpoint_id,
+            last_checkpointed_gseq=last_checkpointed_gseq,
+        )
 
         self.log_manager.append_log(
             gseq=last_checkpointed_gseq,
@@ -338,6 +429,8 @@ class ParticipantNode:
             details={
                 "checkpoint_id": checkpoint_id,
                 "snapshot_path": str(snapshot_path),
+                "observed_max_gseq": observed_max_gseq,
+                "previous_high_watermark": previous_high_watermark,
                 "active_tx_count": len(active_tx_ids),
                 "in_doubt_tx_count": len(in_doubt_tx_ids),
                 "state_by_tx_count": len(self.state_by_tx),

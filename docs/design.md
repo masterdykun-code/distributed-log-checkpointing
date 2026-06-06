@@ -83,12 +83,33 @@ Local checkpoint được tạo bằng cách quét durable log của từng part
 Mỗi local checkpoint gồm:
 
 - `last_checkpointed_gseq`;
+- `observed_max_gseq`;
+- `previous_high_watermark`;
 - `active_tx_ids`;
 - `in_doubt_tx_ids`;
 - `log_size_before`;
 - `state_by_tx_count`.
 
 `in_doubt_tx_ids` được lấy từ các transaction có latest state là `READY`.
+
+`last_checkpointed_gseq` được triển khai dưới dạng high-watermark không giảm.
+Mỗi site lưu high-watermark trong:
+
+```text
+snapshots/<site>_checkpoint_state.json
+```
+
+Sau pruning, các transaction log cũ có thể không còn tồn tại. Vì vậy checkpoint
+tiếp theo sử dụng:
+
+```text
+last_checkpointed_gseq = max(
+    observed_max_gseq trong log hiện tại,
+    previous_high_watermark
+)
+```
+
+Khi workload được chạy với `--reset`, log và high-watermark đều được reset.
 
 ## 6. Global checkpoint và safe point
 
@@ -116,6 +137,30 @@ global_safe_point = 1000
 ```
 
 Nếu workload có crash sau `READY`, `global_safe_point` vẫn có thể là 1000, nhưng transaction in-doubt sẽ nằm trong `protected_tx_ids` và không bị prune.
+
+### Demo site chậm
+
+`scripts/run_delayed_checkpoint_demo.py` tạo ba participant process riêng.
+Mỗi process đọc tuần tự cùng dataset và ghi durable log. Node được chọn bởi
+`--slow-site` có processing delay lớn hơn. Sau `--checkpoint-after` giây,
+checkpoint được yêu cầu đồng thời và mỗi site tự báo tiến độ đã ghi thật:
+
+```bash
+python scripts/run_delayed_checkpoint_demo.py --limit 1000 --slow-site NodeB --slow-delay 0.005 --checkpoint-after 1 --checkpoint-id 50
+```
+
+Ví dụ:
+
+```text
+NodeA = 199
+NodeB = 84
+NodeC = 198
+global_safe_point = 84
+```
+
+Điều kiện thử nghiệm được cấu hình trước, nhưng các giá trị tiến độ và safe
+point được đo khi chạy. Demo dùng thư mục log, metric và snapshot riêng nên
+không làm thay đổi workload chính.
 
 ## 7. Protected transactions
 
@@ -214,6 +259,7 @@ python scripts/generate_dataset.py --records 100000
 python scripts/run_workload.py --limit 1000 --reset --fast --abort-rate 0.1 --crash-rate 0.01
 python scripts/run_checkpoint_demo.py --checkpoint-id 1
 python scripts/run_global_checkpoint.py --checkpoint-id 1
+python scripts/run_delayed_checkpoint_demo.py --limit 1000 --slow-site NodeB --slow-delay 0.005 --checkpoint-after 1 --checkpoint-id 50
 python scripts/run_log_pruning.py --checkpoint-id 1 --include-coordinator
 python scripts/run_recovery_demo.py --fail-on-unresolved
 python scripts/run_multiprocessing_failure_demo.py --checkpoint-id 100 --tx-index 1001

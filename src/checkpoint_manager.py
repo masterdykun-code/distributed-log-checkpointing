@@ -20,17 +20,25 @@ class GlobalCheckpointManager:
     computes the global safe point, and writes a global checkpoint snapshot.
     """
 
-    def __init__(self, sites: List[str] | None = None) -> None:
+    def __init__(
+        self,
+        sites: List[str] | None = None,
+        *,
+        metrics_dir: Path = METRICS_DIR,
+        snapshot_dir: Path = SNAPSHOT_DIR,
+    ) -> None:
         self.sites = sites or ["NodeA", "NodeB", "NodeC"]
+        self.metrics_dir = metrics_dir
+        self.snapshot_dir = snapshot_dir
 
-        METRICS_DIR.mkdir(parents=True, exist_ok=True)
-        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        self.metrics_dir.mkdir(parents=True, exist_ok=True)
+        self.snapshot_dir.mkdir(parents=True, exist_ok=True)
 
     def _load_local_checkpoint_summary(self, checkpoint_id: int) -> Dict[str, Any]:
         """
         Load metrics/local_checkpoint_<id>_summary.json.
         """
-        path = METRICS_DIR / f"local_checkpoint_{checkpoint_id}_summary.json"
+        path = self.metrics_dir / f"local_checkpoint_{checkpoint_id}_summary.json"
 
         if not path.exists():
             raise FileNotFoundError(
@@ -126,8 +134,13 @@ class GlobalCheckpointManager:
             ),
         }
 
-        snapshot_path = SNAPSHOT_DIR / f"global_checkpoint_{checkpoint_id}.json"
-        summary_path = METRICS_DIR / f"global_checkpoint_{checkpoint_id}_summary.json"
+        snapshot_path = (
+            self.snapshot_dir / f"global_checkpoint_{checkpoint_id}.json"
+        )
+        summary_path = (
+            self.metrics_dir
+            / f"global_checkpoint_{checkpoint_id}_summary.json"
+        )
 
         with snapshot_path.open("w", encoding="utf-8") as file:
             json.dump(global_checkpoint, file, indent=2, ensure_ascii=False)

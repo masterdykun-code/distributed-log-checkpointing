@@ -79,7 +79,8 @@ Project thể hiện điều này bằng các cơ chế:
 - Global checkpoint đưa các transaction `READY` vào `protected_tx_ids`.
 - `LogManager.prune_logs()` không xóa log của transaction protected.
 - Demo lỗi tạo tình huống NodeB crash sau khi ghi `READY`.
-- Sau restart, NodeB đọc log, phát hiện `TX_FAIL_001` đang in-doubt, hỏi Coordinator và ghi quyết định cuối cùng.
+- Sau restart, NodeB đọc log, phát hiện transaction đang in-doubt, tra durable
+  decision trong `data/global_tx_table.json` và ghi quyết định cuối cùng.
 
 Đây là phần quan trọng nhất để chứng minh log pruning an toàn: nếu READY log bị xóa, NodeB có thể mất bằng chứng rằng nó từng vote commit, làm recovery sai.
 
@@ -97,14 +98,16 @@ Demo lỗi của project tập trung vào trường hợp quan trọng nhất:
 NodeB writes READY
 NodeB crashes before final decision
 Coordinator decides GLOBAL_ABORT
-Global checkpoint protects TX_FAIL_001
+Global checkpoint protects TX001001
 Pruning does not delete NodeB READY log
-NodeB restarts and recovers TX_FAIL_001 as in-doubt
-NodeB asks Coordinator for final decision
+NodeB restarts and recovers TX001001 as in-doubt
+NodeB reads the durable global decision
 NodeB writes ABORT
 ```
 
-Kết quả này được lưu trong `metrics/failure_demo_summary.json`. Trường:
+Demo hiện tại dùng transaction thật từ dataset, mặc định là `TX001001` sau
+workload 1.000 transaction. Kết quả được lưu trong
+`metrics/multiprocessing_failure_demo_summary.json`. Trường:
 
 ```text
 nodeb_ready_log_preserved_after_pruning = true
@@ -175,6 +178,24 @@ global_safe_point = min(
 
 Đây là cách bảo thủ nhưng an toàn. Nó phù hợp với tinh thần recovery trong hệ phân tán: không được xóa thông tin mà một site vẫn có thể cần để phục hồi.
 
+High-watermark của local checkpoint được lưu ngoài phần transaction log có
+thể prune. Vì vậy safe point không bị giảm giả tạo ở checkpoint tiếp theo chỉ
+vì các log trước đó đã được xóa.
+
+Project cũng có demo site chậm bằng `multiprocessing`. NodeB được cấu hình
+processing delay cao hơn, checkpoint xảy ra khi ba process có tiến độ khác
+nhau và safe point được tính từ tiến độ thật:
+
+```text
+NodeA = 199
+NodeB = 84
+NodeC = 198
+global_safe_point = min(199, 84, 198) = 84
+```
+
+Kịch bản này chứng minh trực tiếp rằng site chậm nhất giới hạn phạm vi log có
+thể prune trên toàn hệ thống.
+
 ## 11. Safe Log Pruning Rule
 
 Project chỉ prune một log record khi tất cả điều kiện sau đúng:
@@ -221,6 +242,8 @@ Thiết kế hiện tại đạt các yêu cầu trọng tâm:
 - Có durable JSONL logs cho từng site.
 - Có local checkpoint và global checkpoint.
 - Có safe point dựa trên minimum checkpointed gseq.
+- Có high-watermark không giảm sau pruning.
+- Có demo site chậm với tiến độ đo từ process thật.
 - Có pruning metric.
 - Có demo lỗi cho NodeB crash sau READY.
 - Có recovery dựa trên durable log và quyết định từ Coordinator.
@@ -228,7 +251,8 @@ Thiết kế hiện tại đạt các yêu cầu trọng tâm:
 Giới hạn của project:
 
 - Đây là mô phỏng trên một laptop, không phải DBMS thật.
-- Demo lỗi hiện mô phỏng crash ở mức logic process/object.
+- Workload chính dùng method call; các kịch bản delay và hard crash dùng
+  `multiprocessing.Process`.
 - Checkpoint chủ yếu lưu recovery metadata thay vì full database page state.
 
 Các giới hạn này chấp nhận được trong phạm vi project cuối kỳ vì mục tiêu chính là chứng minh logic reliability, safe checkpointing và log pruning.

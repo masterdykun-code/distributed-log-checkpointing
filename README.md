@@ -50,6 +50,7 @@ scripts/
   run_workload.py                     Chạy workload 2PC từ dataset, hỗ trợ abort-rate và crash-rate
   run_checkpoint_demo.py              Tạo local checkpoint cho NodeA, NodeB, NodeC
   run_global_checkpoint.py            Tạo global checkpoint và tính global_safe_point
+  run_delayed_checkpoint_demo.py      Demo site chậm giới hạn safe point bằng multiprocessing
   run_log_pruning.py                  Prune log an toàn và ghi metric dung lượng tiết kiệm
   run_recovery_demo.py                Recovery tổng thể cho NodeA, NodeB, NodeC sau pruning
   run_failure_demo.py                 Demo recovery ở mức object khi NodeB crash sau READY
@@ -62,6 +63,9 @@ src/
   checkpoint_manager.py               Gom local checkpoint, tính safe point và protected transactions
   recovery_manager.py                 Phục hồi participant từ READY/in-doubt sang COMMIT hoặc ABORT
   models.py                           Định nghĩa state, message, log record và checkpoint metadata
+
+tests/
+  test_checkpointing.py               Kiểm thử high-watermark và phép min của safe point
 ```
 
 `logs/*.log`, `metrics/*` và `snapshots/*` là artifact sinh từ demo nên được ignore trong Git. Repo chỉ giữ các thư mục này bằng `.gitkeep`.
@@ -144,11 +148,18 @@ metrics/local_checkpoint_1_summary.json
 Mỗi local checkpoint lưu:
 
 - `last_checkpointed_gseq`
+- `observed_max_gseq`
+- `previous_high_watermark`
 - `active_tx_ids`
 - `in_doubt_tx_ids`
 - `log_size_before`
 
 Nếu workload có crash sau `READY`, checkpoint sẽ có `in_doubt_tx_count > 0`.
+
+`last_checkpointed_gseq` là high-watermark không giảm. Giá trị này được
+lưu riêng trong `snapshots/<site>_checkpoint_state.json`, nên sau khi log cũ
+đã bị prune, checkpoint tiếp theo không bị lùi về `gseq` thấp hơn. Khi chạy
+workload với `--reset`, high-watermark cũng được reset về 0.
 
 ## 4. Tạo global checkpoint
 
@@ -183,7 +194,39 @@ protected_tx_ids = active_tx_ids union in_doubt_tx_ids
 
 Các transaction trong `protected_tx_ids` không được prune.
 
-## 5. Prune log an toàn
+## 5. Demo site xử lý chậm
+
+Demo này dùng ba `multiprocessing.Process` đọc cùng dataset thật. NodeB được
+cấu hình delay lớn hơn, sau đó checkpoint được yêu cầu khi các process vẫn
+đang xử lý:
+
+```bash
+python scripts/run_delayed_checkpoint_demo.py --limit 1000 --slow-site NodeB --slow-delay 0.005 --checkpoint-after 1 --checkpoint-id 50
+```
+
+Kết quả được đo từ log thực tế, không hard-code tiến độ. Ví dụ:
+
+```text
+NodeA.last_checkpointed_gseq = 199
+NodeB.last_checkpointed_gseq = 84
+NodeC.last_checkpointed_gseq = 198
+global_safe_point = min(199, 84, 198) = 84
+```
+
+Output:
+
+```text
+logs/delayed_site_demo/
+metrics/delayed_site_demo/
+metrics/delayed_site_demo_summary.json
+snapshots/delayed_site_demo/
+```
+
+Demo dùng thư mục riêng nên không ghi đè log của workload chính. Mục đích của
+nó là chứng minh site chậm nhất giới hạn safe point; `--abort-rate` và
+`--crash-rate` vẫn được kiểm thử trong `run_workload.py`.
+
+## 6. Prune log an toàn
 
 ```bash
 python scripts/run_log_pruning.py --checkpoint-id 1 --include-coordinator
@@ -210,7 +253,7 @@ saved_bytes = before_bytes - after_bytes
 saved_percent = saved_bytes / before_bytes * 100
 ```
 
-## 6. Recovery tổng thể sau pruning
+## 7. Recovery tổng thể sau pruning
 
 Sau khi pruning, các transaction đang `READY` / in-doubt vẫn được giữ lại trong log vì chúng nằm trong `protected_tx_ids`. Lệnh sau phục hồi toàn bộ participant bằng cách đọc durable log và `data/global_tx_table.json`:
 
@@ -239,7 +282,7 @@ total_remaining_in_doubt = 0
 
 Điều này chứng minh rằng pruning không xóa các log cần cho recovery.
 
-## 7. Demo crash bằng multiprocessing
+## 8. Demo crash bằng multiprocessing
 
 Script này dùng transaction thật từ `data/transactions_100k.jsonl`. Mặc định `--tx-index 1001`, phù hợp khi trước đó workload demo đã chạy 1000 transaction.
 
@@ -287,6 +330,7 @@ python scripts/generate_dataset.py --records 100000
 python scripts/run_workload.py --limit 1000 --reset --fast --abort-rate 0.1 --crash-rate 0.01
 python scripts/run_checkpoint_demo.py --checkpoint-id 1
 python scripts/run_global_checkpoint.py --checkpoint-id 1
+python scripts/run_delayed_checkpoint_demo.py --limit 1000 --slow-site NodeB --slow-delay 0.005 --checkpoint-after 1 --checkpoint-id 50
 python scripts/run_log_pruning.py --checkpoint-id 1 --include-coordinator
 python scripts/run_recovery_demo.py --fail-on-unresolved
 python scripts/run_multiprocessing_failure_demo.py --checkpoint-id 100 --tx-index 1001
@@ -298,6 +342,18 @@ Khi trình bày, tập trung vào 4 tiêu chí trong rubric:
 - **Failure Handling**: NodeB crash sau `READY`, recovery từ durable log.
 - **Log Management**: log JSONL có `lsn`, `gseq`, `tx_id`, `site`, `state`, `event`.
 - **Textbook Alignment**: 2PC chỉ commit khi tất cả vote commit; `READY` là in-doubt; durable log cần cho recovery.
+
+## Kiểm thử
+
+```bash
+python -m compileall src scripts tests
+python -m unittest discover -s tests -v
+```
+
+Unit test kiểm tra hai thuộc tính chính:
+
+- local checkpoint high-watermark không giảm sau pruning;
+- global safe point bằng giá trị nhỏ nhất giữa các local checkpoint.
 
 ## Liên hệ lý thuyết
 

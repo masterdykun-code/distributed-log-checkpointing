@@ -50,10 +50,9 @@ scripts/
   run_workload.py                     Chạy workload 2PC từ dataset, hỗ trợ abort-rate và crash-rate
   run_checkpoint_demo.py              Tạo local checkpoint cho NodeA, NodeB, NodeC
   run_global_checkpoint.py            Tạo global checkpoint và tính global_safe_point
-  run_delayed_checkpoint_demo.py      Demo site chậm giới hạn safe point bằng multiprocessing
+  run_concurrent_2pc_demo.py          Demo 2PC concurrent, site chậm và checkpoint giữa pipeline
   run_log_pruning.py                  Prune log an toàn và ghi metric dung lượng tiết kiệm
   run_recovery_demo.py                Recovery tổng thể cho NodeA, NodeB, NodeC sau pruning
-  run_failure_demo.py                 Demo recovery ở mức object khi NodeB crash sau READY
   run_multiprocessing_failure_demo.py Demo NodeB process crash bằng multiprocessing
 
 src/
@@ -150,16 +149,22 @@ Mỗi local checkpoint lưu:
 - `last_checkpointed_gseq`
 - `observed_max_gseq`
 - `previous_high_watermark`
+- `contiguous_final_gseq`
 - `active_tx_ids`
 - `in_doubt_tx_ids`
 - `log_size_before`
 
 Nếu workload có crash sau `READY`, checkpoint sẽ có `in_doubt_tx_count > 0`.
 
-`last_checkpointed_gseq` là high-watermark không giảm. Giá trị này được
-lưu riêng trong `snapshots/<site>_checkpoint_state.json`, nên sau khi log cũ
-đã bị prune, checkpoint tiếp theo không bị lùi về `gseq` thấp hơn. Khi chạy
-workload với `--reset`, high-watermark cũng được reset về 0.
+`last_checkpointed_gseq` là high-watermark liên tục không giảm. Site chỉ nâng
+mốc này khi mọi transaction từ checkpoint trước đến mốc mới đều đã ở trạng
+thái cuối `COMMIT` hoặc `ABORT`. Nếu site đã thấy `gseq=100` nhưng `gseq=47`
+còn `READY`, safe prefix của site chỉ dừng ở 46.
+
+High-watermark được lưu riêng trong
+`snapshots/<site>_checkpoint_state.json`, nên sau pruning checkpoint tiếp
+theo không bị lùi. Khi chạy workload với `--reset`, high-watermark cũng được
+reset về 0.
 
 ## 4. Tạo global checkpoint
 
@@ -184,7 +189,9 @@ global_safe_point = min(
 )
 ```
 
-Trong workload đồng bộ 2PC, nếu cả ba node đã xử lý đến 1000 thì `global_safe_point = 1000`. Nếu một site checkpoint thấp hơn, global safe point sẽ bị giới hạn bởi site đó.
+Nếu cả ba node đã hoàn tất liên tục đến 1000 thì `global_safe_point = 1000`.
+Nếu một site chậm hoặc còn transaction `READY` tạo thành khoảng trống, global
+safe point sẽ bị giới hạn bởi safe prefix của site đó.
 
 Global checkpoint cũng gom:
 
@@ -194,37 +201,58 @@ protected_tx_ids = active_tx_ids union in_doubt_tx_ids
 
 Các transaction trong `protected_tx_ids` không được prune.
 
-## 5. Demo site xử lý chậm
+## 5. Demo concurrent/pipelined 2PC với site chậm
 
-Demo này dùng ba `multiprocessing.Process` đọc cùng dataset thật. NodeB được
-cấu hình delay lớn hơn, sau đó checkpoint được yêu cầu khi các process vẫn
-đang xử lý:
-
-```bash
-python scripts/run_delayed_checkpoint_demo.py --limit 1000 --slow-site NodeB --slow-delay 0.005 --checkpoint-after 1 --checkpoint-id 50
-```
-
-Kết quả được đo từ log thực tế, không hard-code tiến độ. Ví dụ:
+Đây là demo đầy đủ có Coordinator và ba participant process. Coordinator mở
+nhiều transaction đồng thời theo `--window-size`; mỗi transaction vẫn đi đủ:
 
 ```text
-NodeA.last_checkpointed_gseq = 199
-NodeB.last_checkpointed_gseq = 84
-NodeC.last_checkpointed_gseq = 198
-global_safe_point = min(199, 84, 198) = 84
+WAIT -> PREPARE/VOTE -> GLOBAL_COMMIT hoặc GLOBAL_ABORT -> ACK -> END
 ```
+
+NodeB được cấu hình xử lý queue chậm hơn. Checkpoint được yêu cầu khi pipeline
+còn transaction in-flight:
+
+```bash
+python scripts/run_concurrent_2pc_demo.py --limit 1000 --window-size 100 --abort-rate 0.1 --slow-site NodeB --slow-delay 0.005 --checkpoint-after 1.2 --checkpoint-id 60
+```
+
+Kết quả thử nghiệm:
+
+```text
+COMMIT=903, ABORT=97, atomicity_mismatches=0
+NodeA.last_checkpointed_gseq = 100
+NodeB.last_checkpointed_gseq = 46
+NodeC.last_checkpointed_gseq = 100
+global_safe_point = min(100, 46, 100) = 46
+```
+
+Sau khi workload hoàn tất, script kiểm tra trạng thái cuối tại cả ba site.
+Mặc định script không pruning để có thể kiểm tra log và checkpoint trước.
+
+Muốn chạy thêm pruning theo snapshot checkpoint giữa pipeline, thêm `--prune`:
+
+```bash
+python scripts/run_concurrent_2pc_demo.py --limit 1000 --window-size 100 --abort-rate 0.1 --slow-site NodeB --slow-delay 0.005 --checkpoint-after 1.2 --checkpoint-id 60 --prune
+```
+
+Khi đó log có `gseq > global_safe_point` và các transaction protected tại
+checkpoint vẫn được giữ. Kết quả dung lượng tiết kiệm nằm trong
+`prune_totals` của file summary.
 
 Output:
 
 ```text
-logs/delayed_site_demo/
-metrics/delayed_site_demo/
-metrics/delayed_site_demo_summary.json
-snapshots/delayed_site_demo/
+logs/concurrent_2pc_demo/Coordinator.log
+logs/concurrent_2pc_demo/NodeA.log
+logs/concurrent_2pc_demo/NodeB.log
+logs/concurrent_2pc_demo/NodeC.log
+metrics/concurrent_2pc_demo_summary.json
+metrics/concurrent_2pc_demo/
+snapshots/concurrent_2pc_demo/
 ```
 
-Demo dùng thư mục riêng nên không ghi đè log của workload chính. Mục đích của
-nó là chứng minh site chậm nhất giới hạn safe point; `--abort-rate` và
-`--crash-rate` vẫn được kiểm thử trong `run_workload.py`.
+Demo dùng thư mục riêng nên không ghi đè workload chính.
 
 ## 6. Prune log an toàn
 
@@ -282,6 +310,23 @@ total_remaining_in_doubt = 0
 
 Điều này chứng minh rằng pruning không xóa các log cần cho recovery.
 
+Sau recovery, tạo checkpoint cycle mới để safe prefix đi qua các transaction
+vừa được giải quyết:
+
+```bash
+python scripts/run_checkpoint_demo.py --checkpoint-id 2
+python scripts/run_global_checkpoint.py --checkpoint-id 2
+python scripts/run_log_pruning.py --checkpoint-id 2 --include-coordinator
+```
+
+Với seed mặc định và workload 1.000 transaction đã kiểm thử:
+
+```text
+checkpoint 1: global_safe_point = 341, protected = 8
+recovery: resolved = 8, remaining_in_doubt = 0
+checkpoint 2: global_safe_point = 1000, protected = 0
+```
+
 ## 8. Demo crash bằng multiprocessing
 
 Script này dùng transaction thật từ `data/transactions_100k.jsonl`. Mặc định `--tx-index 1001`, phù hợp khi trước đó workload demo đã chạy 1000 transaction.
@@ -330,9 +375,12 @@ python scripts/generate_dataset.py --records 100000
 python scripts/run_workload.py --limit 1000 --reset --fast --abort-rate 0.1 --crash-rate 0.01
 python scripts/run_checkpoint_demo.py --checkpoint-id 1
 python scripts/run_global_checkpoint.py --checkpoint-id 1
-python scripts/run_delayed_checkpoint_demo.py --limit 1000 --slow-site NodeB --slow-delay 0.005 --checkpoint-after 1 --checkpoint-id 50
 python scripts/run_log_pruning.py --checkpoint-id 1 --include-coordinator
 python scripts/run_recovery_demo.py --fail-on-unresolved
+python scripts/run_checkpoint_demo.py --checkpoint-id 2
+python scripts/run_global_checkpoint.py --checkpoint-id 2
+python scripts/run_log_pruning.py --checkpoint-id 2 --include-coordinator
+python scripts/run_concurrent_2pc_demo.py --limit 1000 --window-size 100 --abort-rate 0.1 --slow-site NodeB --slow-delay 0.005 --checkpoint-after 1.2 --checkpoint-id 60
 python scripts/run_multiprocessing_failure_demo.py --checkpoint-id 100 --tx-index 1001
 ```
 
@@ -350,9 +398,10 @@ python -m compileall src scripts tests
 python -m unittest discover -s tests -v
 ```
 
-Unit test kiểm tra hai thuộc tính chính:
+Unit test kiểm tra ba thuộc tính chính:
 
-- local checkpoint high-watermark không giảm sau pruning;
+- local checkpoint high-watermark liên tục không giảm sau pruning;
+- local safe prefix dừng trước transaction chưa final;
 - global safe point bằng giá trị nhỏ nhất giữa các local checkpoint.
 
 ## Liên hệ lý thuyết

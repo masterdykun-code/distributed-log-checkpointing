@@ -381,10 +381,13 @@ class ParticipantNode:
         latest_state_by_tx = summary["latest_state_by_tx"]
         observed_max_gseq = summary["last_checkpointed_gseq"]
         previous_high_watermark = self._load_checkpoint_high_watermark()
-        last_checkpointed_gseq = max(
-            observed_max_gseq,
-            previous_high_watermark,
-        )
+        terminal_gseqs = summary["terminal_gseqs"]
+        contiguous_final_gseq = previous_high_watermark
+
+        while contiguous_final_gseq + 1 in terminal_gseqs:
+            contiguous_final_gseq += 1
+
+        last_checkpointed_gseq = contiguous_final_gseq
         active_tx_ids = summary["active_tx_ids"]
         in_doubt_tx_ids = summary["in_doubt_tx_ids"]
 
@@ -397,6 +400,7 @@ class ParticipantNode:
             "last_checkpointed_gseq": last_checkpointed_gseq,
             "observed_max_gseq": observed_max_gseq,
             "previous_high_watermark": previous_high_watermark,
+            "contiguous_final_gseq": contiguous_final_gseq,
             "active_tx_ids": active_tx_ids,
             "in_doubt_tx_ids": in_doubt_tx_ids,
             "state_by_tx_count": len(self.state_by_tx),
@@ -431,6 +435,7 @@ class ParticipantNode:
                 "snapshot_path": str(snapshot_path),
                 "observed_max_gseq": observed_max_gseq,
                 "previous_high_watermark": previous_high_watermark,
+                "contiguous_final_gseq": contiguous_final_gseq,
                 "active_tx_count": len(active_tx_ids),
                 "in_doubt_tx_count": len(in_doubt_tx_ids),
                 "state_by_tx_count": len(self.state_by_tx),

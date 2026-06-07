@@ -85,6 +85,7 @@ Mỗi local checkpoint gồm:
 - `last_checkpointed_gseq`;
 - `observed_max_gseq`;
 - `previous_high_watermark`;
+- `contiguous_final_gseq`;
 - `active_tx_ids`;
 - `in_doubt_tx_ids`;
 - `log_size_before`;
@@ -92,7 +93,8 @@ Mỗi local checkpoint gồm:
 
 `in_doubt_tx_ids` được lấy từ các transaction có latest state là `READY`.
 
-`last_checkpointed_gseq` được triển khai dưới dạng high-watermark không giảm.
+`last_checkpointed_gseq` được triển khai dưới dạng high-watermark liên tục
+không giảm.
 Mỗi site lưu high-watermark trong:
 
 ```text
@@ -103,10 +105,8 @@ Sau pruning, các transaction log cũ có thể không còn tồn tại. Vì v�
 tiếp theo sử dụng:
 
 ```text
-last_checkpointed_gseq = max(
-    observed_max_gseq trong log hiện tại,
-    previous_high_watermark
-)
+contiguous_final_gseq = prefix lớn nhất mà mọi gseq đều final
+last_checkpointed_gseq = max(previous_high_watermark, contiguous_final_gseq)
 ```
 
 Khi workload được chạy với `--reset`, log và high-watermark đều được reset.
@@ -138,29 +138,38 @@ global_safe_point = 1000
 
 Nếu workload có crash sau `READY`, `global_safe_point` vẫn có thể là 1000, nhưng transaction in-doubt sẽ nằm trong `protected_tx_ids` và không bị prune.
 
-### Demo site chậm
+### Demo concurrent/pipelined 2PC
 
-`scripts/run_delayed_checkpoint_demo.py` tạo ba participant process riêng.
-Mỗi process đọc tuần tự cùng dataset và ghi durable log. Node được chọn bởi
-`--slow-site` có processing delay lớn hơn. Sau `--checkpoint-after` giây,
-checkpoint được yêu cầu đồng thời và mỗi site tự báo tiến độ đã ghi thật:
+`scripts/run_concurrent_2pc_demo.py` tạo Coordinator ở process chính và ba
+participant process có FIFO queue riêng. Coordinator giữ một cửa sổ nhiều
+transaction in-flight. Mỗi transaction đi đủ hai pha 2PC và Coordinator ghi
+`WAIT`, global decision, ACK và `END`.
+
+NodeB có processing delay lớn hơn nên queue bị tồn đọng. Sau
+`--checkpoint-after` giây, checkpoint được tạo ở ranh giới message hiện tại:
 
 ```bash
-python scripts/run_delayed_checkpoint_demo.py --limit 1000 --slow-site NodeB --slow-delay 0.005 --checkpoint-after 1 --checkpoint-id 50
+python scripts/run_concurrent_2pc_demo.py --limit 1000 --window-size 100 --abort-rate 0.1 --slow-site NodeB --slow-delay 0.005 --checkpoint-after 1.2 --checkpoint-id 60
 ```
 
-Ví dụ:
+Kết quả kiểm thử:
 
 ```text
-NodeA = 199
-NodeB = 84
-NodeC = 198
-global_safe_point = 84
+NodeA = 100
+NodeB = 46
+NodeC = 100
+global_safe_point = 46
+atomicity_mismatches = 0
 ```
 
-Điều kiện thử nghiệm được cấu hình trước, nhưng các giá trị tiến độ và safe
-point được đo khi chạy. Demo dùng thư mục log, metric và snapshot riêng nên
-không làm thay đổi workload chính.
+Safe point dùng contiguous final prefix thay vì `max(gseq)`, vì trong pipeline
+một site có thể đã thấy transaction mới nhưng transaction cũ hơn vẫn còn
+`READY`. Script tiếp tục chạy hết workload, kiểm tra atomicity ở cả ba site,
+sau đó giữ nguyên log để kiểm tra. Pruning chỉ chạy khi truyền thêm `--prune`:
+
+```bash
+python scripts/run_concurrent_2pc_demo.py --limit 1000 --window-size 100 --abort-rate 0.1 --slow-site NodeB --slow-delay 0.005 --checkpoint-after 1.2 --checkpoint-id 60 --prune
+```
 
 ## 7. Protected transactions
 
@@ -259,9 +268,12 @@ python scripts/generate_dataset.py --records 100000
 python scripts/run_workload.py --limit 1000 --reset --fast --abort-rate 0.1 --crash-rate 0.01
 python scripts/run_checkpoint_demo.py --checkpoint-id 1
 python scripts/run_global_checkpoint.py --checkpoint-id 1
-python scripts/run_delayed_checkpoint_demo.py --limit 1000 --slow-site NodeB --slow-delay 0.005 --checkpoint-after 1 --checkpoint-id 50
 python scripts/run_log_pruning.py --checkpoint-id 1 --include-coordinator
 python scripts/run_recovery_demo.py --fail-on-unresolved
+python scripts/run_checkpoint_demo.py --checkpoint-id 2
+python scripts/run_global_checkpoint.py --checkpoint-id 2
+python scripts/run_log_pruning.py --checkpoint-id 2 --include-coordinator
+python scripts/run_concurrent_2pc_demo.py --limit 1000 --window-size 100 --abort-rate 0.1 --slow-site NodeB --slow-delay 0.005 --checkpoint-after 1.2 --checkpoint-id 60
 python scripts/run_multiprocessing_failure_demo.py --checkpoint-id 100 --tx-index 1001
 ```
 

@@ -130,8 +130,8 @@ Sơ đồ:
 
 - Workload chính dùng Python method calls để mô phỏng giao tiếp Coordinator -> Participants.
 - Demo crash dùng `multiprocessing.Process` và `multiprocessing.Queue` để mô phỏng các site chạy trong process riêng.
-- Demo site chậm dùng ba process có processing delay khác nhau và checkpoint
-  giữa lúc workload đang chạy.
+- Demo site chậm dùng concurrent/pipelined 2PC, Coordinator và ba process có
+  FIFO queue, checkpoint giữa lúc nhiều transaction còn in-flight.
 - Communication delay được mô phỏng bằng `time.sleep()` trong participant node.
 
 **Lưu trữ vật lý:**
@@ -167,8 +167,8 @@ Không cần DBMS thật hoặc framework web vì trọng tâm là mô phỏng t
 4. Ghi durable JSONL log cho từng site.
 5. Tạo local checkpoint từ durable log.
 6. Tạo global checkpoint và tính `global_safe_point`.
-7. Lưu local checkpoint high-watermark không giảm sau pruning.
-8. Cài đặt demo site chậm để kiểm chứng phép lấy minimum.
+7. Lưu local checkpoint contiguous high-watermark không giảm sau pruning.
+8. Cài đặt concurrent/pipelined 2PC và demo site chậm để kiểm chứng phép min.
 9. Cài đặt log pruning dựa trên safe point và protected transactions.
 10. Cài đặt crash scenario sau `READY`.
 11. Cài đặt recovery tổng thể cho các transaction in-doubt.
@@ -211,14 +211,15 @@ Các trường quan trọng:
 - `total_unresolved`
 - `total_remaining_in_doubt`
 
-Metric của demo site chậm:
+Metric của demo concurrent 2PC:
 
 ```text
-metrics/delayed_site_demo_summary.json
+metrics/concurrent_2pc_demo_summary.json
 ```
 
-File này lưu tiến độ đo được tại NodeA, NodeB, NodeC, `global_safe_point` và
-site đang giới hạn safe point.
+File này lưu tiến độ an toàn tại NodeA, NodeB, NodeC, `global_safe_point`,
+site giới hạn safe point, số `COMMIT`/`ABORT`, protected transaction và kết
+quả kiểm tra atomicity. Khi chạy thêm `--prune`, file cũng lưu pruning metric.
 
 ### Kịch bản lỗi
 

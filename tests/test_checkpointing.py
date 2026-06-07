@@ -94,6 +94,46 @@ class CheckpointingTests(unittest.TestCase):
 
             self.assertEqual(result["global_safe_point"], 850)
 
+    def test_local_checkpoint_stops_before_non_final_gap(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            node = ParticipantNode(
+                "NodeA",
+                min_delay=0.0,
+                max_delay=0.0,
+                log_dir=root / "logs",
+                snapshot_dir=root / "snapshots",
+            )
+
+            transactions = {
+                gseq: {
+                    "tx_id": f"TX{gseq:06d}",
+                    "account_id": "ACC0001",
+                    "symbol": "AAPL",
+                    "side": "BUY",
+                    "quantity": 10,
+                    "price": 100.0,
+                    "timestamp": "test",
+                }
+                for gseq in range(1, 4)
+            }
+
+            node.handle_prepare(transactions[1], 1, can_commit=True)
+            node.handle_global_commit(transactions[1]["tx_id"], 1)
+            node.handle_prepare(transactions[2], 2, can_commit=True)
+            node.handle_prepare(transactions[3], 3, can_commit=True)
+            node.handle_global_commit(transactions[3]["tx_id"], 3)
+
+            first = node.create_checkpoint(1)
+
+            self.assertEqual(first.last_checkpointed_gseq, 1)
+            self.assertEqual(first.in_doubt_tx_ids, ["TX000002"])
+
+            node.handle_global_abort(transactions[2]["tx_id"], 2)
+            second = node.create_checkpoint(2)
+
+            self.assertEqual(second.last_checkpointed_gseq, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

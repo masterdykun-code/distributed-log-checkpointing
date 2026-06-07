@@ -179,22 +179,27 @@ global_safe_point = min(
 Đây là cách bảo thủ nhưng an toàn. Nó phù hợp với tinh thần recovery trong hệ phân tán: không được xóa thông tin mà một site vẫn có thể cần để phục hồi.
 
 High-watermark của local checkpoint được lưu ngoài phần transaction log có
-thể prune. Vì vậy safe point không bị giảm giả tạo ở checkpoint tiếp theo chỉ
-vì các log trước đó đã được xóa.
+thể prune. Trong workload concurrent, `max(gseq)` chưa chắc là safe prefix:
+site có thể đã thấy gseq 100 nhưng gseq 47 vẫn còn `READY`. Vì vậy project
+tính largest contiguous final prefix và chỉ nâng checkpoint qua các
+transaction đã `COMMIT` hoặc `ABORT` liên tục.
 
-Project cũng có demo site chậm bằng `multiprocessing`. NodeB được cấu hình
-processing delay cao hơn, checkpoint xảy ra khi ba process có tiến độ khác
-nhau và safe point được tính từ tiến độ thật:
+Demo `run_concurrent_2pc_demo.py` chạy 2PC đầy đủ bằng Coordinator và ba
+participant process. NodeB có queue chậm hơn, checkpoint xảy ra khi còn nhiều
+transaction in-flight:
 
 ```text
-NodeA = 199
-NodeB = 84
-NodeC = 198
-global_safe_point = min(199, 84, 198) = 84
+NodeA = 100
+NodeB = 46
+NodeC = 100
+global_safe_point = min(100, 46, 100) = 46
 ```
 
-Kịch bản này chứng minh trực tiếp rằng site chậm nhất giới hạn phạm vi log có
-thể prune trên toàn hệ thống.
+Sau khi chạy hết 1.000 transaction, cả ba site đều có 903 `COMMIT`, 97
+`ABORT` và số atomicity mismatch bằng 0. Kịch bản này đồng thời chứng minh
+full 2PC, site chậm và safe prefix. Mặc định demo giữ nguyên log để đối chiếu;
+khi thêm `--prune`, hệ thống mới pruning theo snapshot giữa pipeline và ghi
+metric dung lượng tiết kiệm.
 
 ## 11. Safe Log Pruning Rule
 
@@ -242,8 +247,8 @@ Thiết kế hiện tại đạt các yêu cầu trọng tâm:
 - Có durable JSONL logs cho từng site.
 - Có local checkpoint và global checkpoint.
 - Có safe point dựa trên minimum checkpointed gseq.
-- Có high-watermark không giảm sau pruning.
-- Có demo site chậm với tiến độ đo từ process thật.
+- Có contiguous high-watermark không giảm sau pruning.
+- Có concurrent/pipelined 2PC và demo site chậm bằng process/queue thật.
 - Có pruning metric.
 - Có demo lỗi cho NodeB crash sau READY.
 - Có recovery dựa trên durable log và quyết định từ Coordinator.

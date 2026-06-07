@@ -220,11 +220,18 @@ class LogManager:
         last_checkpointed_gseq = (
             max(latest_gseq_by_tx.values()) if latest_gseq_by_tx else 0
         )
+        terminal_gseqs = {
+            latest_gseq_by_tx[tx_id]
+            for tx_id, state in latest_state_by_tx.items()
+            if tx_id in latest_gseq_by_tx
+            and state in {TxState.COMMIT, TxState.ABORT, TxState.END}
+        }
 
         return {
             "latest_state_by_tx": latest_state_by_tx,
             "latest_gseq_by_tx": latest_gseq_by_tx,
             "last_checkpointed_gseq": last_checkpointed_gseq,
+            "terminal_gseqs": terminal_gseqs,
             "active_tx_ids": active_tx_ids,
             "in_doubt_tx_ids": in_doubt_tx_ids,
             "tx_count": len(latest_state_by_tx),

@@ -35,7 +35,8 @@ def create_local_checkpoints(checkpoint_id: int, sites: List[str]) -> list[dict]
         results.append(result)
 
         print(
-            f"{site}: last_checkpointed_gseq={metadata.last_checkpointed_gseq}, "
+            f"{site}: observed_max_gseq={metadata.observed_max_gseq}, "
+            f"safe_prefix={metadata.contiguous_final_gseq}, "
             f"active={len(metadata.active_tx_ids)}, "
             f"in_doubt={len(metadata.in_doubt_tx_ids)}, "
             f"log_size_before={metadata.log_size_before} bytes"

@@ -59,7 +59,6 @@ def participant_process(
                     transaction=message["payload"]["transaction"],
                     gseq=int(message["gseq"]),
                     can_commit=bool(message["payload"].get("can_commit", True)),
-                    crash_after_ready=False,
                 )
                 output_queue.put(response.to_dict())
                 time.sleep(0.05)
@@ -355,6 +354,7 @@ def run_demo(
             votes[str(message["sender"])] = message
 
         processes["NodeB"].join(timeout=1.0)
+        nodeb_alive_after_crash = processes["NodeB"].is_alive()
 
         if "NodeB" not in votes:
             prepare_errors["NodeB"] = (
@@ -363,6 +363,10 @@ def run_demo(
 
         print("Step 2: NodeB process has crashed after READY.")
         print(f"NodeB exitcode: {processes['NodeB'].exitcode}")
+        print(f"NodeB alive after crash: {nodeb_alive_after_crash}")
+
+        if nodeb_alive_after_crash:
+            raise RuntimeError("NodeB process is still alive after hard crash.")
 
         all_vote_commit = (
             len(votes) == len(sites)
@@ -476,6 +480,7 @@ def run_demo(
             "process_exitcodes": {
                 site: process.exitcode for site, process in processes.items()
             },
+            "nodeb_alive_after_crash": nodeb_alive_after_crash,
             "nodeb_ready_log_preserved_after_pruning": nodeb_ready_preserved,
             "local_checkpoints": local_checkpoints,
             "global_checkpoint": global_checkpoint,

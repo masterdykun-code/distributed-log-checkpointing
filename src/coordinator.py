@@ -133,7 +133,6 @@ class Coordinator:
         self,
         transaction: Dict[str, Any],
         can_commit_by_site: Optional[Dict[str, bool]] = None,
-        crash_site_after_ready: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Execute one distributed transaction using Two-Phase Commit.
@@ -141,11 +140,6 @@ class Coordinator:
         can_commit_by_site:
             Example: {"NodeB": False}
             This makes NodeB vote abort.
-
-        crash_site_after_ready:
-            Example: "NodeB"
-            This simulates NodeB crashing after writing READY.
-            Full crash recovery will be handled in a later day.
         """
 
         can_commit_by_site = can_commit_by_site or {}
@@ -183,14 +177,12 @@ class Coordinator:
         for participant in self.participants:
             site = participant.site_name
             can_commit = can_commit_by_site.get(site, True)
-            should_crash = crash_site_after_ready == site
 
             try:
                 vote_msg = participant.handle_prepare(
                     transaction=transaction,
                     gseq=gseq,
                     can_commit=can_commit,
-                    crash_after_ready=should_crash,
                 )
                 votes[site] = vote_msg.to_dict()
 
@@ -254,9 +246,8 @@ class Coordinator:
         for participant in self.participants:
             site = participant.site_name
 
-            # If this participant crashed during prepare, we do not send
-            # final decision to it in this simple object simulation.
-            # Later, failure demo will recover it from log.
+            # A participant that failed during prepare is unavailable for
+            # the decision phase and must recover from its durable log.
             if site in prepare_errors:
                 decision_errors[site] = "participant unavailable after prepare"
                 continue

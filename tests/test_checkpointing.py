@@ -38,6 +38,9 @@ class CheckpointingTests(unittest.TestCase):
 
             first = node.create_checkpoint(1)
             self.assertEqual(first.last_checkpointed_gseq, 3)
+            self.assertFalse(
+                (snapshot_dir / "NodeA_checkpoint_state.json").exists()
+            )
 
             node.log_manager.prune_logs(
                 global_safe_point=3,
@@ -127,7 +130,11 @@ class CheckpointingTests(unittest.TestCase):
             first = node.create_checkpoint(1)
 
             self.assertEqual(first.last_checkpointed_gseq, 1)
+            self.assertEqual(first.observed_max_gseq, 3)
+            self.assertEqual(first.previous_high_watermark, 0)
+            self.assertEqual(first.contiguous_final_gseq, 1)
             self.assertEqual(first.in_doubt_tx_ids, ["TX000002"])
+            self.assertEqual(first.to_dict()["observed_max_gseq"], 3)
 
             node.handle_global_abort(transactions[2]["tx_id"], 2)
             second = node.create_checkpoint(2)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import random
 import time
 from pathlib import Path
@@ -59,35 +58,20 @@ class ParticipantNode:
 
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
 
-    @property
-    def checkpoint_state_path(self) -> Path:
-        """
-        Durable high-watermark for this site's local checkpoints.
-
-        Transaction records below the checkpoint can be pruned, so the
-        high-watermark must be stored separately from the prunable log.
-        """
-        return self.snapshot_dir / f"{self.site_name}_checkpoint_state.json"
-
     def _load_checkpoint_high_watermark(self) -> int:
-        if self.checkpoint_state_path.exists():
-            with self.checkpoint_state_path.open("r", encoding="utf-8") as file:
-                try:
-                    state = json.load(file)
-                except json.JSONDecodeError:
-                    state = {}
-
-            if "last_checkpointed_gseq" in state:
-                return int(state["last_checkpointed_gseq"])
-
-        # Backward-compatible migration for snapshots created before the
-        # dedicated checkpoint-state file was introduced.
+        """
+        Read the durable high-watermark from existing checkpoint snapshots.
+        """
         high_watermark = 0
 
         for snapshot_path in self.snapshot_dir.glob(
             f"{self.site_name}_checkpoint_*.json"
         ):
-            if snapshot_path == self.checkpoint_state_path:
+            checkpoint_suffix = snapshot_path.stem.removeprefix(
+                f"{self.site_name}_checkpoint_"
+            )
+
+            if not checkpoint_suffix.isdigit():
                 continue
 
             with snapshot_path.open("r", encoding="utf-8") as file:
@@ -102,28 +86,6 @@ class ParticipantNode:
             )
 
         return high_watermark
-
-    def _save_checkpoint_high_watermark(
-        self,
-        *,
-        checkpoint_id: int,
-        last_checkpointed_gseq: int,
-    ) -> None:
-        state = {
-            "site": self.site_name,
-            "checkpoint_id": checkpoint_id,
-            "last_checkpointed_gseq": last_checkpointed_gseq,
-            "timestamp": utc_now_iso(),
-        }
-
-        temp_path = self.checkpoint_state_path.with_suffix(".tmp")
-
-        with temp_path.open("w", encoding="utf-8") as file:
-            json.dump(state, file, indent=2, ensure_ascii=False)
-            file.flush()
-            os.fsync(file.fileno())
-
-        temp_path.replace(self.checkpoint_state_path)
 
     def _simulate_communication_delay(self) -> None:
         """
@@ -157,7 +119,6 @@ class ParticipantNode:
         transaction: Dict[str, Any],
         gseq: int,
         can_commit: bool = True,
-        crash_after_ready: bool = False,
     ) -> ProtocolMessage:
         """
         Handle PREPARE from Coordinator.
@@ -172,7 +133,6 @@ class ParticipantNode:
         - write ABORT log
         - return VOTE_ABORT
 
-        crash_after_ready is used later for failure demo.
         """
 
         self._simulate_communication_delay()
@@ -250,12 +210,6 @@ class ParticipantNode:
                 "transaction": transaction,
             },
         )
-
-        if crash_after_ready:
-            # This simulates a crash after durable READY log was written.
-            raise RuntimeError(
-                f"Simulated crash at {self.site_name} after READY for {tx_id}"
-            )
 
         return ProtocolMessage(
             message_type=MessageType.VOTE_COMMIT,
@@ -419,11 +373,6 @@ class ParticipantNode:
         with snapshot_path.open("w", encoding="utf-8") as file:
             json.dump(snapshot, file, indent=2, ensure_ascii=False)
 
-        self._save_checkpoint_high_watermark(
-            checkpoint_id=checkpoint_id,
-            last_checkpointed_gseq=last_checkpointed_gseq,
-        )
-
         self.log_manager.append_log(
             gseq=last_checkpointed_gseq,
             tx_id=None,
@@ -446,6 +395,9 @@ class ParticipantNode:
             checkpoint_id=checkpoint_id,
             site=self.site_name,
             last_checkpointed_gseq=last_checkpointed_gseq,
+            observed_max_gseq=observed_max_gseq,
+            previous_high_watermark=previous_high_watermark,
+            contiguous_final_gseq=contiguous_final_gseq,
             active_tx_ids=active_tx_ids,
             in_doubt_tx_ids=in_doubt_tx_ids,
             log_size_before=self.log_manager.get_log_size(),
@@ -537,9 +489,6 @@ def run_participant_node(
                     transaction=message["payload"]["transaction"],
                     gseq=int(message["gseq"]),
                     can_commit=bool(message["payload"].get("can_commit", True)),
-                    crash_after_ready=bool(
-                        message["payload"].get("crash_after_ready", False)
-                    ),
                 )
                 output_queue.put(response.to_dict())
 

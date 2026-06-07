@@ -1,166 +1,60 @@
-# Báo Cáo Phân Tích Lý Thuyết
+# Báo Cáo Phân Tích
 
-## 1. Mục Tiêu Phân Tích
+## 1. Mục tiêu
 
-Đề tài **Log Pruning and Global Checkpointing: High-Frequency Trading** mô phỏng một hệ cơ sở dữ liệu phân tán có một Coordinator và ba participant site: NodeA, NodeB, NodeC. Mục tiêu chính là xác định **safe point** để xóa log cũ sau checkpoint mà vẫn bảo toàn khả năng phục hồi khi có lỗi.
+Đề tài xác định safe point để xóa transaction log trên các site phân tán mà
+không làm mất khả năng recovery. Phân tích dựa trên các khái niệm reliability,
+2PC, site failure và recovery protocol trong *Principles of Distributed
+Database Systems, 4th Edition* của M. Tamer Özsu và Patrick Valduriez.
 
-Báo cáo này liên hệ thiết kế của project với các khái niệm reliability trong sách **Principles of Distributed Database Systems, 4th Edition** của M. Tamer Özsu và Patrick Valduriez, đặc biệt ở các phần:
+## 2. Atomic Commitment Và 2PC
 
-- Mục 5.4: Distributed DBMS Reliability.
-- Mục 5.4.1: Two-Phase Commit Protocol.
-- Mục 5.4.3: Dealing with Site Failures.
-- Mục 5.4.3.1: Termination and Recovery Protocols for 2PC.
-- Mục 5.4.3.2: Three-Phase Commit Protocol.
-- Mục 5.4.6: Architectural Considerations.
-
-## 2. Distributed Reliability Và Atomic Commitment
-
-Theo Özsu và Valduriez, reliability trong hệ cơ sở dữ liệu phân tán tập trung vào ba nhóm protocol: commit protocol, termination protocol và recovery protocol. Vấn đề cốt lõi là đảm bảo **atomic commitment**: một distributed transaction phải có hiệu ứng all-or-nothing trên tất cả site.
-
-Trong project này:
-
-- `Coordinator` đóng vai trò điều phối quyết định toàn cục.
-- `NodeA`, `NodeB`, `NodeC` đóng vai trò participant.
-- Mỗi site ghi durable log riêng trong `logs/*.log`.
-- `global_tx_table.json` lưu quyết định toàn cục để participant có thể hỏi lại khi recovery.
-
-Thiết kế này bám theo mô hình coordinator/participant trong phần 5.4 của sách. Điểm quan trọng là participant không tự quyết định kết quả cuối cùng của distributed transaction; quyết định cuối cùng thuộc về Coordinator.
-
-## 3. Two-Phase Commit Trong Project
-
-Mục 5.4.1 mô tả Two-Phase Commit (2PC) với hai pha:
-
-1. **Prepare / Voting phase**: Coordinator gửi `PREPARE`, participant trả lời `VOTE_COMMIT` hoặc `VOTE_ABORT`.
-2. **Decision phase**: Coordinator gửi `GLOBAL_COMMIT` hoặc `GLOBAL_ABORT` dựa trên kết quả vote.
-
-Project cài đặt đúng mô hình này:
-
-- Coordinator ghi `BEGIN_COMMIT`, gửi prepare và chuyển sang trạng thái `WAIT`.
-- Participant nếu có thể commit thì ghi log `READY` và vote commit.
-- Participant nếu không thể commit thì ghi abort và vote abort.
-- Coordinator chỉ commit khi tất cả participant vote commit.
-- Nếu có ít nhất một participant vote abort hoặc lỗi, Coordinator quyết định global abort.
-
-Các state chính trong code:
+Một distributed transaction phải có kết quả all-or-nothing trên mọi site.
+Project dùng Two-Phase Commit:
 
 ```text
-Coordinator:
-INIT -> WAIT -> COMMIT -> END
-INIT -> WAIT -> ABORT  -> END
-
-Participant:
-INIT -> READY -> COMMIT
-INIT -> READY -> ABORT
-INIT -> ABORT
+Phase 1: PREPARE -> VOTE_COMMIT / VOTE_ABORT
+Phase 2: GLOBAL_COMMIT / GLOBAL_ABORT
 ```
 
-Các state này được định nghĩa trong `src/models.py`, còn logic execute transaction nằm trong `src/coordinator.py` và `src/node.py`.
+Quy tắc global commit:
 
-## 4. Global Commit Rule
+- chỉ commit khi tất cả participant vote commit;
+- nếu có vote abort hoặc participant lỗi thì global abort.
 
-Một quy tắc quan trọng trong 2PC là **global-commit rule**:
-
-- Nếu có ít nhất một participant vote abort, transaction phải global abort.
-- Chỉ khi tất cả participant vote commit, transaction mới được global commit.
-
-Project áp dụng trực tiếp quy tắc này trong `Coordinator.execute_transaction()`. Biến `all_vote_commit` chỉ đúng khi toàn bộ participant trả về `VOTE_COMMIT` và không có prepare error. Nếu điều kiện này sai, Coordinator chọn `ABORT`.
-
-Điều này giúp hệ thống tránh trường hợp một site commit trong khi site khác abort, tức là tránh vi phạm atomicity của distributed transaction.
-
-## 5. Ý Nghĩa Của READY Và In-Doubt Transaction
-
-Trong 2PC, `READY` là trạng thái nguy hiểm nhất của participant. Khi participant đã ghi `READY`, nó đã vote commit và không được đổi ý tùy tiện. Tuy nhiên, participant vẫn chưa biết quyết định cuối cùng của Coordinator.
-
-Theo mục 5.4.3.1, nếu participant timeout hoặc crash khi đang ở `READY`, nó không thể tự commit vì có thể participant khác đã vote abort. Nó cũng không thể tự abort vì nó đã vote commit. Vì vậy transaction ở `READY` được xem là **in-doubt** và participant phải hỏi Coordinator hoặc các site khác để biết kết quả cuối cùng.
-
-Project thể hiện điều này bằng các cơ chế:
-
-- `LogManager.get_in_doubt_tx_ids()` tìm các transaction đang ở `READY`.
-- Global checkpoint đưa các transaction `READY` vào `protected_tx_ids`.
-- `LogManager.prune_logs()` không xóa log của transaction protected.
-- Demo lỗi tạo tình huống NodeB crash sau khi ghi `READY`.
-- Sau restart, NodeB đọc log, phát hiện transaction đang in-doubt, tra durable
-  decision trong `data/global_tx_table.json` và ghi quyết định cuối cùng.
-
-Đây là phần quan trọng nhất để chứng minh log pruning an toàn: nếu READY log bị xóa, NodeB có thể mất bằng chứng rằng nó từng vote commit, làm recovery sai.
-
-## 6. Site Failure Và Recovery Trong 2PC
-
-Mục 5.4.3.1 phân tích các tình huống site failure trong 2PC. Với participant failure, có ba trường hợp chính:
-
-- Fail ở `INITIAL`: khi recovery có thể abort vì chưa vote commit.
-- Fail ở `READY`: phải xử lý như timeout trong READY và cần biết quyết định cuối cùng.
-- Fail ở `COMMIT` hoặc `ABORT`: đây là trạng thái kết thúc nên không cần quyết định lại.
-
-Demo lỗi của project tập trung vào trường hợp quan trọng nhất:
+Quy tắc này được thể hiện trong `Coordinator.execute_transaction()`. Các state
+chính là:
 
 ```text
-NodeB writes READY
-NodeB crashes before final decision
-Coordinator decides GLOBAL_ABORT
-Global checkpoint protects TX001001
-Pruning does not delete NodeB READY log
-NodeB restarts and recovers TX001001 as in-doubt
-NodeB reads the durable global decision
-NodeB writes ABORT
+Coordinator: WAIT -> COMMIT/ABORT -> END
+Participant: READY -> COMMIT/ABORT
 ```
 
-Demo hiện tại dùng transaction thật từ dataset, mặc định là `TX001001` sau
-workload 1.000 transaction. Kết quả được lưu trong
-`metrics/multiprocessing_failure_demo_summary.json`. Trường:
+## 3. READY Và In-Doubt
+
+Theo lý thuyết 2PC, participant ở `READY` đã ghi durable log và vote commit,
+nhưng chưa biết global decision. Nó không được tự commit vì site khác có thể
+vote abort, cũng không được tự abort vì đã cam kết khả năng commit.
+
+Do đó:
+
+- latest state `READY` được xem là in-doubt;
+- transaction này được đưa vào `protected_tx_ids`;
+- log của nó không được prune;
+- sau restart, participant phải đọc quyết định của Coordinator.
+
+Đây là lý do pruning không thể chỉ kiểm tra `gseq <= global_safe_point`.
+
+## 4. Global Checkpoint Và Safe Point
+
+Mỗi site tính contiguous final prefix:
 
 ```text
-nodeb_ready_log_preserved_after_pruning = true
+last_checkpointed_gseq =
+    gseq lớn nhất mà mọi transaction trước đó đều final
 ```
 
-chứng minh rằng pruning không phá hỏng khả năng recovery.
-
-## 7. Vì Sao 2PC Có Thể Blocking
-
-Özsu và Valduriez chỉ ra rằng 2PC là một blocking protocol. Khi participant ở `READY` và Coordinator bị lỗi, participant không đủ thông tin để tự quyết định commit hay abort. Nó phải chờ quyết định cuối cùng hoặc recovery của Coordinator.
-
-Project không cố loại bỏ hoàn toàn blocking. Thay vào đó, project tập trung vào yêu cầu của đề tài: không xóa log còn cần cho recovery. Vì vậy thiết kế chọn hướng bảo vệ các transaction in-doubt thay vì prune tất cả log trước safe point.
-
-Điểm này giải thích vì sao pruning rule không chỉ dựa vào `gseq <= global_safe_point`, mà còn cần kiểm tra:
-
-```text
-transaction is not active
-transaction is not READY / in-doubt
-transaction is not protected
-```
-
-## 8. Vì Sao Không Dùng Three-Phase Commit
-
-Mục 5.4.3.2 trình bày Three-Phase Commit (3PC) như một hướng giảm blocking bằng cách thêm trạng thái `PRECOMMIT`. Tuy nhiên, 3PC cần thêm vòng trao đổi message và forced log writes, làm tăng latency và chi phí giao tiếp.
-
-Đề tài này tập trung vào:
-
-- global checkpointing,
-- safe point calculation,
-- log pruning,
-- disk space saved,
-- recovery demo sau crash.
-
-Vì vậy 2PC là lựa chọn hợp lý hơn cho project cuối kỳ: đủ để mô phỏng atomic commitment, có trạng thái `READY` rõ ràng để phân tích failure, và phù hợp với rubric yêu cầu READY/COMMIT/ABORT.
-
-## 9. Log Management Và Recovery Information
-
-Mục 5.4.6 nhấn mạnh rằng recovery trong distributed DBMS cần đọc log để biết trạng thái cuối cùng của transaction. Sách cũng thảo luận việc commit protocol record có thể được lưu trong database log hoặc distributed transaction log.
-
-Project chọn cách đơn giản và dễ quan sát:
-
-- Mỗi site có một durable JSONL log riêng.
-- Mỗi log record có `lsn`, `gseq`, `tx_id`, `site`, `role`, `state`, `event`, `timestamp`, `details`.
-- Log được flush và fsync sau khi ghi để mô phỏng durable logging.
-- Recovery đọc log để dựng lại latest state theo từng transaction.
-
-Cách này phù hợp với mục tiêu mô phỏng vì giảng viên có thể mở trực tiếp file log để kiểm tra state transition và recovery evidence.
-
-## 10. Global Checkpoint Và Safe Point
-
-Đề tài yêu cầu cài đặt Global Checkpointing algorithm và xác định safe point để xóa log trên nhiều distributed site.
-
-Project định nghĩa safe point như sau:
+Global safe point:
 
 ```text
 global_safe_point = min(
@@ -170,100 +64,110 @@ global_safe_point = min(
 )
 ```
 
-Ý nghĩa:
+Phép minimum là lựa chọn bảo thủ: hệ thống chỉ xóa log đến vị trí mà tất cả
+site đều đã có trạng thái phục hồi an toàn.
 
-- Mỗi node chỉ biết chắc nó đã checkpoint đến `last_checkpointed_gseq` của riêng nó.
-- Hệ thống chỉ an toàn khi chọn mốc nhỏ nhất giữa tất cả node.
-- Nếu một node checkpoint chậm hơn, toàn hệ thống phải lấy node đó làm giới hạn.
-
-Đây là cách bảo thủ nhưng an toàn. Nó phù hợp với tinh thần recovery trong hệ phân tán: không được xóa thông tin mà một site vẫn có thể cần để phục hồi.
-
-High-watermark của local checkpoint được lưu ngoài phần transaction log có
-thể prune. Trong workload concurrent, `max(gseq)` chưa chắc là safe prefix:
-site có thể đã thấy gseq 100 nhưng gseq 47 vẫn còn `READY`. Vì vậy project
-tính largest contiguous final prefix và chỉ nâng checkpoint qua các
-transaction đã `COMMIT` hoặc `ABORT` liên tục.
-
-Demo `run_concurrent_2pc_demo.py` chạy 2PC đầy đủ bằng Coordinator và ba
-participant process. NodeB có queue chậm hơn, checkpoint xảy ra khi còn nhiều
-transaction in-flight:
+Workload bình thường 1.000 transaction cho kết quả:
 
 ```text
-NodeA = 100
-NodeB = 46
-NodeC = 100
-global_safe_point = min(100, 46, 100) = 46
+NodeA = 1000
+NodeB = 1000
+NodeC = 1000
+global_safe_point = 1000
 ```
 
-Sau khi chạy hết 1.000 transaction, cả ba site đều có 903 `COMMIT`, 97
-`ABORT` và số atomicity mismatch bằng 0. Kịch bản này đồng thời chứng minh
-full 2PC, site chậm và safe prefix. Mặc định demo giữ nguyên log để đối chiếu;
-khi thêm `--prune`, hệ thống mới pruning theo snapshot giữa pipeline và ghi
-metric dung lượng tiết kiệm.
+Trong failure demo:
 
-## 11. Safe Log Pruning Rule
+```text
+NodeA = 1001
+NodeB = 1000
+NodeC = 1001
+global_safe_point = 1000
+```
 
-Project chỉ prune một log record khi tất cả điều kiện sau đúng:
+NodeB đã quan sát transaction 1001 nhưng chỉ có safe prefix đến 1000 vì
+`TX001001` còn `READY`.
+
+## 5. Safe Log Pruning
+
+Project prune record khi đồng thời thỏa:
 
 ```text
 gseq <= global_safe_point
-transaction final state is COMMIT, ABORT, or END
-transaction is not active
-transaction is not READY / in-doubt
-transaction is not in protected_tx_ids
+transaction đã COMMIT, ABORT hoặc END
+transaction không active
+transaction không READY/in-doubt
+transaction không thuộc protected_tx_ids
 ```
 
-Quy tắc này bảo vệ atomicity và recovery correctness:
+Các điều kiện này bảo đảm log cần cho recovery vẫn được giữ lại.
 
-- `gseq <= global_safe_point` đảm bảo log nằm trước checkpoint toàn cục.
-- Trạng thái cuối đảm bảo transaction đã kết thúc.
-- Không active và không READY đảm bảo transaction không còn cần quyết định cuối cùng.
-- `protected_tx_ids` giữ lại các transaction đặc biệt như NodeB crash sau READY.
-
-## 12. Metric Disk Space Saved
-
-Metric chính của đề tài là dung lượng đĩa tiết kiệm sau mỗi checkpointing cycle:
+Metric theo yêu cầu đề tài:
 
 ```text
 saved_bytes = before_bytes - after_bytes
 saved_percent = saved_bytes / before_bytes * 100
 ```
 
-Project ghi metric vào:
+Với workload 1.000 transaction, cycle kiểm thử ghi nhận:
 
 ```text
-metrics/checkpoint_metrics.csv
-metrics/prune_checkpoint_<id>_summary.json
+total_before_bytes = 4.336.102
+total_after_bytes = 1.416
+total_saved_bytes = 4.334.686
+total_saved_percent = 99,97%
 ```
 
-Ví dụ sau checkpoint 1, project ghi nhận dung lượng log trước và sau pruning cho Coordinator, NodeA, NodeB, NodeC. Đây là bằng chứng định lượng cho yêu cầu "Disk space saved after each checkpointing cycle".
+## 6. Process Crash Và Recovery
 
-## 13. Đánh Giá Thiết Kế
+Failure demo dùng `multiprocessing` để tạo process riêng. NodeB:
 
-Thiết kế hiện tại đạt các yêu cầu trọng tâm:
+```text
+ghi READY
+gửi VOTE_COMMIT
+process chết bằng os._exit(2)
+```
 
-- Có dataset 100,000 giao dịch.
-- Có 2PC state machine với READY, COMMIT, ABORT.
-- Có durable JSONL logs cho từng site.
-- Có local checkpoint và global checkpoint.
-- Có safe point dựa trên minimum checkpointed gseq.
-- Có contiguous high-watermark không giảm sau pruning.
-- Có concurrent/pipelined 2PC và demo site chậm bằng process/queue thật.
-- Có pruning metric.
-- Có demo lỗi cho NodeB crash sau READY.
-- Có recovery dựa trên durable log và quyết định từ Coordinator.
+Bằng chứng:
 
-Giới hạn của project:
+```text
+process_exitcodes.NodeB = 2
+nodeb_alive_after_crash = false
+```
 
-- Đây là mô phỏng trên một laptop, không phải DBMS thật.
-- Workload chính dùng method call; các kịch bản delay và hard crash dùng
-  `multiprocessing.Process`.
-- Checkpoint chủ yếu lưu recovery metadata thay vì full database page state.
+Khi process đã chết, NodeB không thể nhận transaction hoặc global decision
+mới. Coordinator vẫn ghi durable global decision. Checkpoint bảo vệ
+`TX001001`, và pruning xác nhận READY log không bị xóa.
 
-Các giới hạn này chấp nhận được trong phạm vi project cuối kỳ vì mục tiêu chính là chứng minh logic reliability, safe checkpointing và log pruning.
+`RecoveryManager` đọc log của NodeB và global transaction table, sau đó ghi
+`ABORT` theo quyết định toàn cục. Kết quả:
 
-## 14. Kết Luận
+```text
+nodeb_ready_log_preserved_after_pruning = true
+remaining_in_doubt_tx_ids = []
+```
 
-Project áp dụng đúng các nguyên lý reliability của Özsu và Valduriez cho distributed transaction processing. Điểm mạnh nhất là xử lý đúng trạng thái `READY`: transaction ở READY được xem là in-doubt, được đưa vào protected set và không bị prune dù nằm trước safe point.
+Điều này đáp ứng tiêu chí failure handling: recovery diễn ra tự động và dữ
+liệu không bị hỏng sau crash.
 
-Nhờ đó, hệ thống có thể tiết kiệm dung lượng log sau checkpoint nhưng vẫn giữ lại các log cần thiết cho recovery. Đây chính là yêu cầu cốt lõi của đề tài **Log Pruning and Checkpointing: High-Frequency Trading**.
+## 7. 2PC Và 3PC
+
+Özsu và Valduriez chỉ ra 2PC có thể blocking khi participant ở `READY` nhưng
+không lấy được quyết định từ Coordinator. Project không loại bỏ blocking; nó
+bảo vệ log cần thiết và hoàn tất transaction khi Coordinator decision có thể
+đọc lại.
+
+3PC thêm pha `PRECOMMIT` để giảm blocking trong một số giả định, nhưng làm
+tăng message và forced log write. Đề tài tập trung vào checkpoint, pruning và
+recovery nên 2PC phù hợp hơn.
+
+## 8. Đánh Giá Theo Rubric
+
+- **State Accuracy:** có `READY`, `COMMIT`, `ABORT`, `END` và transition 2PC.
+- **Failure Handling:** NodeB process crash thật và tự recovery.
+- **Log Management:** durable JSONL log có đủ LSN, GSEQ, state và event.
+- **Textbook Alignment:** áp dụng global commit rule, in-doubt state, recovery
+  từ durable decision theo lý thuyết Özsu và Valduriez.
+
+Project đáp ứng đúng trọng tâm đề tài: global checkpoint, safe point, log
+pruning, disk-space metric và recovery correctness.

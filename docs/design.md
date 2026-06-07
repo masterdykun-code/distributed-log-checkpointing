@@ -1,199 +1,112 @@
-# Tài liệu thiết kế
+# Tài Liệu Thiết Kế
 
-## 1. Tổng quan
+## 1. Kiến trúc
 
-Project mô phỏng cơ chế reliability trong cơ sở dữ liệu phân tán cho workload giao dịch chứng khoán tần suất cao. Hệ thống gồm một Coordinator và ba participant site: NodeA, NodeB, NodeC.
-
-Mục tiêu thiết kế:
-
-- xử lý giao dịch phân tán bằng Two-Phase Commit (2PC);
-- ghi durable log cho từng site;
-- tạo local checkpoint và global checkpoint;
-- tính safe point để prune log an toàn;
-- bảo vệ transaction đang `READY` / in-doubt;
-- phục hồi node bị crash từ durable log và global transaction table.
-
-## 2. Giao thức 2PC
-
-Coordinator điều phối mỗi transaction theo 2 phase.
-
-Phase 1: Prepare/Vote
+Project mô phỏng một Coordinator và ba participant site:
 
 ```text
-Coordinator -> PREPARE -> participants
-Participant -> VOTE_COMMIT hoặc VOTE_ABORT
+Coordinator
+   |-- NodeA
+   |-- NodeB
+   `-- NodeC
 ```
 
-Phase 2: Global Decision
+Mỗi site có durable log riêng. Workload chính chạy 2PC tuần tự; failure demo
+dùng process riêng để mô phỏng NodeB crash thật.
+
+## 2. Two-Phase Commit
+
+Pha 1:
 
 ```text
-Coordinator -> GLOBAL_COMMIT nếu tất cả vote commit
-Coordinator -> GLOBAL_ABORT nếu có vote abort hoặc participant lỗi
-Participant -> COMMIT hoặc ABORT theo quyết định toàn cục
+Coordinator gửi PREPARE
+Participant ghi READY và VOTE_COMMIT
+hoặc ghi ABORT và VOTE_ABORT
 ```
 
-## 3. State machine
-
-Coordinator:
+Pha 2:
 
 ```text
-INIT -> WAIT -> COMMIT -> END
-INIT -> WAIT -> ABORT  -> END
+Tất cả vote commit -> GLOBAL_COMMIT
+Có vote abort hoặc lỗi -> GLOBAL_ABORT
+Participant áp dụng quyết định và gửi ACK
+Coordinator ghi END
 ```
 
-Participant:
+State machine:
 
 ```text
-INIT  -> READY
-INIT  -> ABORT
-READY -> COMMIT
-READY -> ABORT
+Coordinator: INIT -> WAIT -> COMMIT/ABORT -> END
+Participant: INIT -> READY -> COMMIT/ABORT
+Participant: INIT -> ABORT
 ```
 
-`READY` là trạng thái quan trọng nhất. Participant đã ghi durable log và đã vote commit, nhưng chưa biết global decision. Nếu participant crash tại đây, transaction bị in-doubt và phải được recovery.
+`READY` là trạng thái in-doubt: participant đã vote commit nhưng chưa biết
+global decision.
 
-## 4. Durable log
+## 3. Durable Log
 
-Mỗi site có một file log riêng trong `logs/`:
+Mỗi record JSONL gồm:
 
 ```text
-Coordinator.log
-NodeA.log
-NodeB.log
-NodeC.log
+lsn, gseq, tx_id, site, role, state, event, timestamp, details
 ```
 
-Mỗi dòng là một JSON object gồm các trường chính:
+- `gseq`: thứ tự toàn cục của transaction.
+- `lsn`: thứ tự record trong log của một site.
+- Log được flush và `fsync` sau mỗi lần ghi.
 
-- `lsn`: local log sequence number;
-- `gseq`: global sequence number do Coordinator cấp;
-- `tx_id`: mã transaction;
-- `site`: site ghi log;
-- `role`: `COORDINATOR` hoặc `PARTICIPANT`;
-- `state`: `READY`, `COMMIT`, `ABORT`, `END`, ...;
-- `event`: sự kiện tạo log record;
-- `details`: thông tin bổ sung.
+## 4. Local Checkpoint
 
-Log được flush và fsync sau mỗi append để mô phỏng durable log cho crash recovery.
-
-## 5. Local checkpoint
-
-Local checkpoint được tạo bằng cách quét durable log của từng participant.
-
-Mỗi local checkpoint gồm:
-
-- `last_checkpointed_gseq`;
-- `observed_max_gseq`;
-- `previous_high_watermark`;
-- `contiguous_final_gseq`;
-- `active_tx_ids`;
-- `in_doubt_tx_ids`;
-- `log_size_before`;
-- `state_by_tx_count`.
-
-`in_doubt_tx_ids` được lấy từ các transaction có latest state là `READY`.
-
-`last_checkpointed_gseq` được triển khai dưới dạng high-watermark liên tục
-không giảm.
-Mỗi site lưu high-watermark trong:
+Local checkpoint quét durable log và lưu:
 
 ```text
-snapshots/<site>_checkpoint_state.json
+observed_max_gseq
+previous_high_watermark
+contiguous_final_gseq
+last_checkpointed_gseq
+active_tx_ids
+in_doubt_tx_ids
 ```
 
-Sau pruning, các transaction log cũ có thể không còn tồn tại. Vì vậy checkpoint
-tiếp theo sử dụng:
+Safe prefix là đoạn liên tục mà mọi transaction đều đã `COMMIT` hoặc `ABORT`.
+Ví dụ site đã quan sát đến 1001 nhưng transaction 1001 còn `READY`:
 
 ```text
-contiguous_final_gseq = prefix lớn nhất mà mọi gseq đều final
-last_checkpointed_gseq = max(previous_high_watermark, contiguous_final_gseq)
+observed_max_gseq = 1001
+last_checkpointed_gseq = 1000
 ```
 
-Khi workload được chạy với `--reset`, log và high-watermark đều được reset.
+High-watermark được đọc lại từ các snapshot
+`snapshots/<site>_checkpoint_<id>.json`, nên không cần file state riêng và
+không bị giảm sau pruning.
 
-## 6. Global checkpoint và safe point
-
-Global checkpoint đọc metadata từ local checkpoint của NodeA, NodeB và NodeC.
-
-Safe point toàn cục:
+## 5. Global Checkpoint
 
 ```text
-global_safe_point = min(
-    NodeA.last_checkpointed_gseq,
-    NodeB.last_checkpointed_gseq,
-    NodeC.last_checkpointed_gseq
-)
+global_safe_point = min(local safe point của mọi site)
 ```
 
-Lý do lấy min: hệ thống chỉ an toàn đến mốc mà tất cả site đều đã checkpoint. Nếu một site checkpoint thấp hơn, log sau mốc đó có thể vẫn cần cho site này khi recovery.
-
-Trong demo workload đồng bộ 2PC, sau khi xử lý 1000 transaction, thường cả ba site cùng có:
-
-```text
-NodeA.last_checkpointed_gseq = 1000
-NodeB.last_checkpointed_gseq = 1000
-NodeC.last_checkpointed_gseq = 1000
-global_safe_point = 1000
-```
-
-Nếu workload có crash sau `READY`, `global_safe_point` vẫn có thể là 1000, nhưng transaction in-doubt sẽ nằm trong `protected_tx_ids` và không bị prune.
-
-### Demo concurrent/pipelined 2PC
-
-`scripts/run_concurrent_2pc_demo.py` tạo Coordinator ở process chính và ba
-participant process có FIFO queue riêng. Coordinator giữ một cửa sổ nhiều
-transaction in-flight. Mỗi transaction đi đủ hai pha 2PC và Coordinator ghi
-`WAIT`, global decision, ACK và `END`.
-
-NodeB có processing delay lớn hơn nên queue bị tồn đọng. Sau
-`--checkpoint-after` giây, checkpoint được tạo ở ranh giới message hiện tại:
-
-```bash
-python scripts/run_concurrent_2pc_demo.py --limit 1000 --window-size 100 --abort-rate 0.1 --slow-site NodeB --slow-delay 0.005 --checkpoint-after 1.2 --checkpoint-id 60
-```
-
-Kết quả kiểm thử:
-
-```text
-NodeA = 100
-NodeB = 46
-NodeC = 100
-global_safe_point = 46
-atomicity_mismatches = 0
-```
-
-Safe point dùng contiguous final prefix thay vì `max(gseq)`, vì trong pipeline
-một site có thể đã thấy transaction mới nhưng transaction cũ hơn vẫn còn
-`READY`. Script tiếp tục chạy hết workload, kiểm tra atomicity ở cả ba site,
-sau đó giữ nguyên log để kiểm tra. Pruning chỉ chạy khi truyền thêm `--prune`:
-
-```bash
-python scripts/run_concurrent_2pc_demo.py --limit 1000 --window-size 100 --abort-rate 0.1 --slow-site NodeB --slow-delay 0.005 --checkpoint-after 1.2 --checkpoint-id 60 --prune
-```
-
-## 7. Protected transactions
-
-Global checkpoint tạo:
+Global checkpoint đồng thời tạo:
 
 ```text
 protected_tx_ids = active_tx_ids union in_doubt_tx_ids
 ```
 
-Transaction trong `protected_tx_ids` không được xóa log, kể cả khi `gseq <= global_safe_point`.
+Không được bỏ qua một site bị crash. Hệ thống dùng checkpoint bền vững gần
+nhất của site đó làm giới hạn.
 
-Quy tắc này bảo vệ các transaction đang `READY`, vì chúng cần durable log để recovery.
+## 6. Log Pruning
 
-## 8. Log pruning
-
-Một log record chỉ được prune nếu thỏa tất cả điều kiện:
+Một record chỉ được prune khi:
 
 ```text
 gseq <= global_safe_point
-transaction đã final: COMMIT, ABORT, hoặc END
-transaction không nằm trong protected_tx_ids
+transaction đã final
+transaction không thuộc protected_tx_ids
 ```
 
-Metric được ghi sau mỗi pruning cycle:
+Metric của mỗi cycle:
 
 ```text
 before_bytes
@@ -202,83 +115,44 @@ saved_bytes
 saved_percent
 ```
 
-## 9. Recovery Manager
+## 7. Crash Và Recovery
 
-`RecoveryManager` phục hồi participant sau crash theo các bước:
-
-1. Đọc durable log của participant.
-2. Tìm các transaction có latest state là `READY`.
-3. Đọc `data/global_tx_table.json`.
-4. Nếu global decision là `COMMIT`, ghi log `COMMIT`.
-5. Nếu global decision là `ABORT`, ghi log `ABORT`.
-6. Nếu chưa có decision, giữ transaction trong `READY` và tiếp tục bảo vệ log.
-
-`scripts/run_recovery_demo.py` dùng `RecoveryManager` để recovery tổng thể cho NodeA, NodeB và NodeC sau bước pruning.
-
-Lệnh chạy:
-
-```bash
-python scripts/run_recovery_demo.py --fail-on-unresolved
-```
-
-Script ghi kết quả vào:
-
-```text
-metrics/recovery_summary.json
-```
-
-Kết quả mong đợi:
-
-```text
-total_in_doubt_before > 0
-total_resolved = total_in_doubt_before
-total_remaining_in_doubt = 0
-```
-
-## 10. Crash demo bằng multiprocessing
-
-`scripts/run_multiprocessing_failure_demo.py` dùng `multiprocessing` để tạo process riêng cho NodeA, NodeB và NodeC.
-
-Demo mặc định dùng transaction thật từ dataset:
+Failure demo tạo process riêng cho NodeA, NodeB và NodeC:
 
 ```text
 NodeA vote commit
-NodeB ghi READY, gửi VOTE_COMMIT, rồi process crash
+NodeB ghi READY, gửi VOTE_COMMIT rồi os._exit(2)
 NodeC vote abort
 Coordinator ghi GLOBAL_ABORT
-NodeA và NodeC nhận GLOBAL_ABORT
-NodeB chưa nhận global decision nên ở READY / in-doubt
-Checkpoint đánh dấu transaction của NodeB là protected
-Pruning không xóa READY log của NodeB
-RecoveryManager ghi ABORT cho NodeB
+NodeB không nhận được global decision
 ```
 
-Lệnh chạy:
+Checkpoint tại transaction 1001:
 
-```bash
-python scripts/run_multiprocessing_failure_demo.py --checkpoint-id 100 --tx-index 1001
+```text
+NodeA = 1001
+NodeB = 1000, in_doubt = TX001001
+NodeC = 1001
+global_safe_point = 1000
 ```
 
-## 11. Hướng demo chính
+Pruning giữ READY log của NodeB. `RecoveryManager` sau đó:
 
-Demo chính không dùng metadata synthetic. Tất cả checkpoint chính được tạo từ log thật sinh ra bởi workload và crash demo.
+1. đọc durable log;
+2. tìm transaction `READY`;
+3. đọc `data/global_tx_table.json`;
+4. ghi `COMMIT` hoặc `ABORT` theo global decision.
 
-```bash
-python scripts/generate_dataset.py --records 100000
-python scripts/run_workload.py --limit 1000 --reset --fast --abort-rate 0.1 --crash-rate 0.01
-python scripts/run_checkpoint_demo.py --checkpoint-id 1
-python scripts/run_global_checkpoint.py --checkpoint-id 1
-python scripts/run_log_pruning.py --checkpoint-id 1 --include-coordinator
-python scripts/run_recovery_demo.py --fail-on-unresolved
-python scripts/run_checkpoint_demo.py --checkpoint-id 2
-python scripts/run_global_checkpoint.py --checkpoint-id 2
-python scripts/run_log_pruning.py --checkpoint-id 2 --include-coordinator
-python scripts/run_concurrent_2pc_demo.py --limit 1000 --window-size 100 --abort-rate 0.1 --slow-site NodeB --slow-delay 0.005 --checkpoint-after 1.2 --checkpoint-id 60
-python scripts/run_multiprocessing_failure_demo.py --checkpoint-id 100 --tx-index 1001
+Recovery được gọi tự động trong failure demo, không cần thao tác thủ công.
+
+## 8. Artifact
+
+```text
+logs/*.log                         Durable logs
+snapshots/*_checkpoint_*.json     Local/global checkpoints
+metrics/checkpoint_metrics.csv    Disk-space metric
+metrics/multiprocessing_failure_demo_summary.json
 ```
 
-## 12. Liên hệ 2PC/3PC
-
-Project cài đặt 2PC. 2PC có thể bị blocking khi participant ở `READY` mà chưa biết global decision. Vì vậy durable log và recovery protocol là bắt buộc.
-
-3PC thêm pha `PRECOMMIT` để giảm blocking trong một số giả định về failure và network. Project không cài đặt 3PC vì trọng tâm đề tài là global checkpointing, safe point và log pruning.
+Thiết kế ưu tiên tính đúng và khả năng quan sát thay vì triển khai một DBMS
+hoàn chỉnh.

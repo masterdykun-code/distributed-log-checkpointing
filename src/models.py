@@ -197,6 +197,9 @@ class CheckpointMetadata:
     checkpoint_id: int
     site: str
     last_checkpointed_gseq: int
+    observed_max_gseq: int = 0
+    previous_high_watermark: int = 0
+    contiguous_final_gseq: int = 0
     active_tx_ids: List[str] = field(default_factory=list)
     in_doubt_tx_ids: List[str] = field(default_factory=list)
     log_size_before: int = 0
@@ -207,6 +210,9 @@ class CheckpointMetadata:
             "checkpoint_id": self.checkpoint_id,
             "site": self.site,
             "last_checkpointed_gseq": self.last_checkpointed_gseq,
+            "observed_max_gseq": self.observed_max_gseq,
+            "previous_high_watermark": self.previous_high_watermark,
+            "contiguous_final_gseq": self.contiguous_final_gseq,
             "active_tx_ids": self.active_tx_ids,
             "in_doubt_tx_ids": self.in_doubt_tx_ids,
             "log_size_before": self.log_size_before,
